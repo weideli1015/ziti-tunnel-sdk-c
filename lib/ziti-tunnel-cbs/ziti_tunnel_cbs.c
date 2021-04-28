@@ -433,7 +433,12 @@ tunneled_service_t *ziti_sdk_c_on_service(ziti_context ziti_ctx, ziti_service *s
         }
     } else if (status == ZITI_SERVICE_UNAVAILABLE) {
         ZITI_LOG(INFO, "service unavailable: %s", service->name);
-        ziti_tunneler_stop_intercepting(tnlr_ctx, ziti_ctx, service->name);
+        if (service->perm_flags & ZITI_CAN_DIAL) {
+            ziti_tunneler_stop_intercepting(tnlr_ctx, ziti_ctx, service->name);
+        }
+        if (service->perm_flags & ZITI_CAN_BIND) {
+            ziti_tunneler_stop_hosting(tnlr_ctx, ziti_ctx, service->name);
+        }
         // todo lookup intercept_ctx by name and free config
     }
 

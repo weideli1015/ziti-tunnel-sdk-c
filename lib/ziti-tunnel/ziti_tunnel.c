@@ -146,7 +146,17 @@ void ziti_tunneler_dial_completed(struct io_ctx_s *io, bool ok) {
 }
 
 host_ctx_t *ziti_tunneler_host(tunneler_context tnlr_ctx, const void *ziti_ctx, const char *service_name, cfg_type_e cfg_type, void *config) {
-    return tnlr_ctx->opts.ziti_host((void *) ziti_ctx, tnlr_ctx->loop, service_name, cfg_type, config);
+    host_ctx_t *h_ctx = tnlr_ctx->opts.ziti_host((void *) ziti_ctx, tnlr_ctx->loop, service_name, cfg_type, config);
+
+    if (h_ctx != NULL) {
+        add_routes(tnlr_ctx->opts.netif_driver, &h_ctx->allowed_source_addresses);
+    }
+
+    return h_ctx;
+}
+
+void ziti_tunneler_stop_hosting(tunneler_context tnlr_ctx, void *ziti_ctx, const char *service_name) {
+    delete_routes(tnlr_ctx->opts.netif_driver, NULL /*TODO need host_ctx_t here */);
 }
 
 static void send_dns_resp(uint8_t *resp, size_t resp_len, void *ctx) {

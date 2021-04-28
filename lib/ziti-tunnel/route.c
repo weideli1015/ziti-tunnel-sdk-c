@@ -37,6 +37,28 @@ int add_route(netif_driver tun, address_t *dest) {
     return 0;
 }
 
+/** add all routes in a list, or none if any routes can't be added. */
+int add_routes(netif_driver tun, address_list_t *addrs) {
+    address_t *addr, *failed_addr = NULL;
+    STAILQ_FOREACH(addr, addrs, entries) {
+        if (add_route(tun, addr) != 0) {
+            failed_addr = addr;
+        }
+    }
+
+    if (failed_addr != NULL) {
+        STAILQ_FOREACH(addr, addrs, entries) {
+            if (addr == failed_addr) {
+                break;
+            }
+            delete_route(tun, addr);
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
 /**
  * delete route only if not in use by actively intercepted service
  * account for subnet routes too.
