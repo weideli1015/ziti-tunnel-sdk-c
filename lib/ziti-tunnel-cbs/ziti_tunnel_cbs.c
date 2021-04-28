@@ -236,6 +236,7 @@ void * ziti_sdk_c_dial(const intercept_ctx_t *intercept_ctx, struct io_ctx_s *io
     if (ziti_conn_init(ziti_ctx, &ziti_io_ctx->ziti_conn, io) != ZITI_OK) {
         ZITI_LOG(ERROR, "ziti_conn_init failed");
         free(ziti_io_ctx);
+        free(ziti_io_ctx);
         return NULL;
     }
 
@@ -433,7 +434,12 @@ tunneled_service_t *ziti_sdk_c_on_service(ziti_context ziti_ctx, ziti_service *s
         }
     } else if (status == ZITI_SERVICE_UNAVAILABLE) {
         ZITI_LOG(INFO, "service unavailable: %s", service->name);
-        ziti_tunneler_stop_intercepting(tnlr_ctx, ziti_ctx, service->name);
+        if (service->perm_flags & ZITI_CAN_DIAL) {
+            ziti_tunneler_stop_intercepting(tnlr_ctx, ziti_ctx, service->name);
+        }
+        if (service->perm_flags & ZITI_CAN_BIND) {
+            ziti_tunneler_stop_hosting(tnlr_ctx, ziti_ctx, service->name);
+        }
         // todo lookup intercept_ctx by name and free config
     }
 

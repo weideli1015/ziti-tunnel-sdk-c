@@ -134,6 +134,7 @@ typedef struct hosted_service_ctx_s {
         uint16_t port;
     } port_u;
     address_list_t    allowed_source_addresses;
+    STAILQ_ENTRY(hosted_service_ctx_s) entries;
 } host_ctx_t;
 
 typedef struct tunneled_service_s {
@@ -190,6 +191,11 @@ extern bool protocol_match(const char *protocol, const protocol_list_t *protocol
 extern bool address_match(const ip_addr_t *addr, const address_list_t *addresses);
 extern bool port_match(int port, const port_range_list_t *port_ranges);
 
+extern int add_route(netif_driver tun, address_t *dest);
+extern int add_routes(netif_driver tun, address_list_t *dest_list);
+extern int delete_route(netif_driver tun, address_t *dest);
+extern int delete_routes(netif_driver tun, address_list_t *dest_list);
+
 extern tunneler_context ziti_tunneler_init(tunneler_sdk_options *opts, uv_loop_t *loop);
 
 /** called by tunneler application when it is done with a tunneler_context.
@@ -203,6 +209,8 @@ extern int ziti_tunneler_intercept(tunneler_context tnlr_ctx, intercept_ctx_t *i
 extern host_ctx_t * ziti_tunneler_host(tunneler_context tnlr_ctx, const void *ziti_ctx, const char *service_name, cfg_type_e cfg_type, void *cfg);
 
 extern void ziti_tunneler_stop_intercepting(tunneler_context tnlr_ctx, void *ziti_ctx, const char *service_name);
+
+extern void ziti_tunneler_stop_hosting(tunneler_context tnlr_ctx, void *ziti_ctx, const char *service_name);
 
 extern void ziti_tunneler_dial_completed(struct io_ctx_s *io_context, bool ok);
 

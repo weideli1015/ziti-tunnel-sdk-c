@@ -797,7 +797,7 @@ host_ctx_t *ziti_sdk_c_host(void *ziti_ctx, uv_loop_t *loop, const char *service
                     free_hosted_service_ctx(host_ctx);
                     return NULL;
                 }
-                STAILQ_INSERT_TAIL(&host_ctx->addr_u.allowed_addresses, a, entries);
+                STAILQ_INSERT_TAIL(&host_ctx->allowed_source_addresses, a, entries);
             }
         }
             break;

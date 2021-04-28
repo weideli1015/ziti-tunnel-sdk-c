@@ -31,7 +31,7 @@ typedef struct tunneler_ctx_s {
     uv_poll_t    netif_poll_req;
     uv_timer_t   lwip_timer_req;
     STAILQ_HEAD(intercept_ctx_list_s, intercept_ctx_s) intercepts;
-//    STAILQ_HEAD(hosted_service_ctx_list_s, hosted_service_ctx_s) hosts;
+    STAILQ_HEAD(hosted_service_ctx_list_s, hosted_service_ctx_s) hosts;
     dns_manager *dns;
     struct udp_pcb *dns_pcb;
 } *tunneler_context;
@@ -75,7 +75,5 @@ struct write_ctx_s {
 };
 
 const char* assign_ip(const char *hostname);
-
-extern int add_route(netif_driver tun, address_t *dest);
 
 #endif //ZITI_TUNNELER_SDK_ZITI_TUNNELER_PRIV_H

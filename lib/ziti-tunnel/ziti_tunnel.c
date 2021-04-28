@@ -70,6 +70,7 @@ tunneler_context ziti_tunneler_init(tunneler_sdk_options *opts, uv_loop_t *loop)
     ctx->loop = loop;
     memcpy(&ctx->opts, opts, sizeof(ctx->opts));
     STAILQ_INIT(&ctx->intercepts);
+    STAILQ_INIT(&ctx->hosts);
     run_packet_loop(loop, ctx);
 
     return ctx;
@@ -146,7 +147,30 @@ void ziti_tunneler_dial_completed(struct io_ctx_s *io, bool ok) {
 }
 
 host_ctx_t *ziti_tunneler_host(tunneler_context tnlr_ctx, const void *ziti_ctx, const char *service_name, cfg_type_e cfg_type, void *config) {
-    return tnlr_ctx->opts.ziti_host((void *) ziti_ctx, tnlr_ctx->loop, service_name, cfg_type, config);
+    host_ctx_t *h_ctx = tnlr_ctx->opts.ziti_host((void *) ziti_ctx, tnlr_ctx->loop, service_name, cfg_type, config);
+
+    if (h_ctx != NULL) {
+        add_routes(tnlr_ctx->opts.netif_driver, &h_ctx->allowed_source_addresses);
+        STAILQ_INSERT_TAIL(&tnlr_ctx->hosts, h_ctx, entries);
+    }
+
+    return h_ctx;
+}
+
+void ziti_tunneler_stop_hosting(tunneler_context tnlr_ctx, void *ziti_ctx, const char *service_name) {
+    host_ctx_t *h_ctx;
+    STAILQ_FOREACH(h_ctx, &tnlr_ctx->hosts, entries) {
+        if (strcmp(h_ctx->service_name, service_name) == 0 &&
+            h_ctx->ziti_ctx == ziti_ctx) {
+            STAILQ_REMOVE(&tnlr_ctx->hosts, h_ctx, hosted_service_ctx_s, entries);
+            // todo deep free host_ctx
+            delete_routes(tnlr_ctx->opts.netif_driver, &h_ctx->allowed_source_addresses);
+            free(h_ctx);
+            break;
+        }
+    }
+
+    delete_routes(tnlr_ctx->opts.netif_driver, NULL /*TODO need host_ctx_t here */);
 }
 
 static void send_dns_resp(uint8_t *resp, size_t resp_len, void *ctx) {
@@ -316,7 +340,7 @@ int ziti_tunneler_intercept(tunneler_context tnlr_ctx, intercept_ctx_t *i_ctx) {
          add_route(tnlr_ctx->opts.netif_driver, address);
     }
 
-    STAILQ_INSERT_TAIL(&tnlr_ctx->intercepts, (struct intercept_ctx_s *)i_ctx, entries);
+    STAILQ_INSERT_TAIL(&tnlr_ctx->intercepts, i_ctx, entries);
 
     return 0;
 }
