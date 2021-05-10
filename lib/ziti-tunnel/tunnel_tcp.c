@@ -173,6 +173,9 @@ ssize_t tunneler_tcp_write(struct tcp_pcb *pcb, const void *data, size_t len) {
     size_t sendlen = MIN(len, tcp_sndbuf(pcb));
     TNL_LOG(TRACE, "pcb[%p] sendlen=%zd", pcb, sendlen);
     if (sendlen > 0) {
+        struct io_ctx_s *io = pcb->callback_arg;
+        TNL_LOG(DEBUG, "service[%s] client[%s] writing %d bytes", io->tnlr_io->service_name,
+                io->tnlr_io->client, sendlen);
         err_t w_err = tcp_write(pcb, data, (u16_t) sendlen,
                                 TCP_WRITE_FLAG_COPY); // TODO hold data until client acks... via on_client_ack maybe? then we wouldn't need to copy here.
         if (w_err != ERR_OK) {

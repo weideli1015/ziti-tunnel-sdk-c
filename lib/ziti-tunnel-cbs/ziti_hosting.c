@@ -156,6 +156,8 @@ static ssize_t on_hosted_client_data(ziti_connection clt, uint8_t *data, ssize_t
             case IPPROTO_TCP: {
                 uv_write_t *req = malloc(sizeof(uv_write_t));
                 req->data = copy;
+                ZITI_LOG(DEBUG, "hosted_service[%s] client[%s] server[%s] writing %d bytes",
+                         io_ctx->service->service_name, ziti_conn_source_identity(clt), io_ctx->server_dial_str, len);
                 int err = uv_write(req, (uv_stream_t *) &io_ctx->server.tcp, &buf, 1, on_hosted_tcp_client_write);
                 if (err < 0) {
                     ZITI_LOG(ERROR, "uv_write failed: %s", uv_err_name(err));

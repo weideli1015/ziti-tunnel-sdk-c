@@ -226,6 +226,10 @@ u8_t recv_udp(void *tnlr_ctx_arg, struct raw_pcb *pcb, struct pbuf *p, const ip_
 ssize_t tunneler_udp_write(struct udp_pcb *pcb, const void *data, size_t len) {
     struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
     memcpy(p->payload, data, len);
+    struct io_ctx_s *io = pcb->recv_arg;
+    TNL_LOG(DEBUG, "service[%s] client[%s] writing %d bytes", io->tnlr_io->service_name,
+            io->tnlr_io->client, len);
+
     /* use udp_sendto_if_src even though local and remote addresses are in pcb, because
      * udp_send verifies that the dest IP matches the netif's IP, and fails with ERR_RTE.
      */
