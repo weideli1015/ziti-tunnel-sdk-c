@@ -121,18 +121,24 @@ static void hosted_server_close(struct hosted_io_ctx_s *io_ctx) {
     }
     switch (io_ctx->server_proto_id) {
         case IPPROTO_TCP:
-            safe_close(&io_ctx->server.tcp, hosted_server_close_cb);
+            //safe_close(&io_ctx->server.tcp, hosted_server_close_cb);
             break;
         case IPPROTO_UDP:
-            safe_close( &io_ctx->server.udp, hosted_server_close_cb);
+            if (io_ctx->lwip_server.udp != NULL) {
+                udp_remove(io_ctx->lwip_server.udp);
+                io_ctx->lwip_server.udp = NULL;
+            }
             break;
+    }
+    if (io_ctx->client) {
+        ziti_close(io_ctx->client, ziti_conn_close_cb);
     }
 }
 
 static void hosted_server_shutdown(struct hosted_io_ctx_s *io_ctx) {
     if (io_ctx->server_proto_id == IPPROTO_TCP) {
         uv_shutdown_t *shut = calloc(1, sizeof(uv_shutdown_t));
-        uv_shutdown(shut, (uv_stream_t *) &io_ctx->server.tcp, tcp_shutdown_cb);
+        //uv_shutdown(shut, (uv_stream_t *) &io_ctx->server.tcp, tcp_shutdown_cb);
     }
 }
 
@@ -158,21 +164,25 @@ static ssize_t on_hosted_client_data(ziti_connection clt, uint8_t *data, ssize_t
                 req->data = copy;
                 ZITI_LOG(DEBUG, "hosted_service[%s] client[%s] server[%s] writing %d bytes",
                          io_ctx->service->service_name, ziti_conn_source_identity(clt), io_ctx->server_dial_str, len);
-                int err = uv_write(req, (uv_stream_t *) &io_ctx->server.tcp, &buf, 1, on_hosted_tcp_client_write);
-                if (err < 0) {
-                    ZITI_LOG(ERROR, "uv_write failed: %s", uv_err_name(err));
-                    on_hosted_tcp_client_write(req, err);
-                }
+//                int err = uv_write(req, (uv_stream_t *) &io_ctx->server.tcp, &buf, 1, on_hosted_tcp_client_write);
+//                if (err < 0) {
+//                    ZITI_LOG(ERROR, "uv_write failed: %s", uv_err_name(err));
+//                    on_hosted_tcp_client_write(req, err);
+//               }
             }
                 break;
             case IPPROTO_UDP: {
-                uv_udp_send_t *req = malloc(sizeof(uv_udp_send_t));
-                req->data = copy;
-                int err = uv_udp_send(req, &io_ctx->server.udp, &buf, 1, NULL, on_hosted_udp_client_write);
-                if (err < 0) {
-                    ZITI_LOG(ERROR, "uv_udp_send failed: %s", uv_err_name(err));
-                    on_hosted_udp_client_write(req, err);
-                }
+                struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
+                p->payload = data; // todo why copy here vs pointer assignment? also see tunnel_udp.c
+                /* use udp_sendto_if_src even though local and remote addresses are in pcb, because
+                 * udp_send verifies that the dest IP matches the netif's IP, and fails with ERR_RTE.
+                 */
+                err_t err = udp_sendto_if_src(io_ctx->lwip_server.udp, p,
+                                              &io_ctx->lwip_server.udp->remote_ip,
+                                              io_ctx->lwip_server.udp->remote_port,
+                                              netif_default,
+                                              &io_ctx->lwip_server.udp->local_ip);
+                pbuf_free(p);
             }
                 break;
             default:
@@ -207,6 +217,9 @@ static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *b
 
 /** called by ziti SDK when data transfer initiated by ziti_write completes */
 static void on_hosted_ziti_write(ziti_connection ziti_conn, ssize_t len, void *ctx) {
+    if (len > 0) {
+        ziti_tunneler_ack(ctx);
+    }
     free(ctx);
 }
 
@@ -241,7 +254,7 @@ static void on_hosted_tcp_server_data(uv_stream_t *stream, ssize_t nread, const 
             } else {
                 // server will not send more data, but ziti may.
                 ziti_close_write(io_ctx->client);
-                uv_read_stop((uv_stream_t *) &io_ctx->server.tcp);
+//                uv_read_stop((uv_stream_t *) &io_ctx->server.tcp);
             }
         } else {
             ZITI_LOG(WARN, "error reading from server [%zd](%s)", nread, uv_strerror(nread));
@@ -250,6 +263,26 @@ static void on_hosted_tcp_server_data(uv_stream_t *stream, ssize_t nread, const 
 
         if (buf->base)
             free(buf->base);
+    }
+}
+
+// todo combine with intercept packet handling
+static void hosted_udp_ack(struct write_ctx_s *write_ctx) {
+    pbuf_free(write_ctx->pbuf);
+}
+/** called by lwip when a hosted UDP server sends data to a client. */
+static void on_hosted_udp_lwip_server_data(void *io_ctx, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *src_ip, u16_t src_port) {
+    struct hosted_io_ctx_s *io = io_ctx;
+    if (p->len > 0) {
+        struct write_ctx_s *wctx = calloc(1, sizeof(struct write_ctx_s));
+        wctx->udp = io->lwip_server.udp;
+        wctx->pbuf = p;
+        wctx->ack = hosted_udp_ack;
+        int zs = ziti_write(io->client, p->payload, p->len, on_hosted_ziti_write, p);
+        if (zs != ZITI_OK) {
+            on_hosted_ziti_write(io->client, p->len, p->payload);
+            hosted_server_close(io);
+        }
     }
 }
 
@@ -279,10 +312,10 @@ static void on_hosted_client_connect_complete(ziti_connection clt, int err) {
         ZITI_LOG(DEBUG, "hosted_service[%s] client[%s] connected", io_ctx->service->service_name, ziti_conn_source_identity(clt));
         switch (io_ctx->server_proto_id) {
             case IPPROTO_TCP:
-                uv_read_start((uv_stream_t *) &io_ctx->server.tcp, alloc_buffer, on_hosted_tcp_server_data);
+//                uv_read_start((uv_stream_t *) &io_ctx->server.tcp, alloc_buffer, on_hosted_tcp_server_data);
                 break;
             case IPPROTO_UDP:
-                uv_udp_recv_start(&io_ctx->server.udp, alloc_buffer, on_hosted_udp_server_data);
+                udp_recv(io_ctx->lwip_server.udp, on_hosted_udp_lwip_server_data, io_ctx);
                 break;
         }
     } else {
@@ -566,10 +599,10 @@ static void on_hosted_client_connect(ziti_connection serv, ziti_connection clt, 
     int uv_err;
     switch (dial_ai->ai_protocol) {
         case IPPROTO_TCP:
-            uv_tcp_init(service_ctx->loop, &io_ctx->server.tcp);
-            io_ctx->server.tcp.data = io_ctx;
+//            uv_tcp_init(service_ctx->loop, &io_ctx->server.tcp);
+//            io_ctx->server.tcp.data = io_ctx;
             if (source_ai != NULL) {
-                uv_err = uv_tcp_bind(&io_ctx->server.tcp, source_ai->ai_addr, 0);
+//                uv_err = uv_tcp_bind(&io_ctx->server.tcp, source_ai->ai_addr, 0);
                 if (uv_err != 0) {
                     ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: uv_tcp_bind failed: %s",
                              service_ctx->service_name, client_identity, uv_err_name(uv_err));
@@ -579,7 +612,7 @@ static void on_hosted_client_connect(ziti_connection serv, ziti_connection clt, 
             }
             {
                 uv_connect_t *c = malloc(sizeof(uv_connect_t));
-                uv_err = uv_tcp_connect(c, &io_ctx->server.tcp, dial_ai->ai_addr, on_hosted_tcp_server_connect_complete);
+//                uv_err = uv_tcp_connect(c, &io_ctx->server.tcp, dial_ai->ai_addr, on_hosted_tcp_server_connect_complete);
                 if (uv_err != 0) {
                     ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: uv_tcp_connect failed: %s",
                              service_ctx->service_name, client_identity, uv_err_name(uv_err));
@@ -589,31 +622,19 @@ static void on_hosted_client_connect(ziti_connection serv, ziti_connection clt, 
             }
             break;
         case IPPROTO_UDP:
-            uv_udp_init(service_ctx->loop, &io_ctx->server.udp);
-            io_ctx->server.udp.data = io_ctx;
+            io_ctx->lwip_server.udp = udp_new();
             if (source_ai != NULL) {
-                uv_err = uv_udp_bind(&io_ctx->server.udp, source_ai->ai_addr, 0);
-                if (uv_err != 0) {
-                    ZITI_LOG(ERROR, "hosted_service[%s] client[%s]: uv_udp_bind failed: %s",
-                             service_ctx->service_name, client_identity, uv_err_name(uv_err));
-                    err = true;
-                    goto done;
-                }
+                // todo clean up address handling
+                ip_addr_t src_ip;
+                struct sockaddr_in *sin = (struct sockaddr_in *)source_ai->ai_addr;
+                ipaddr_aton(source_addr, &src_ip);
+                ip_addr_set_ipaddr(&io_ctx->lwip_server.udp->local_ip, &src_ip);
+                io_ctx->lwip_server.udp->local_port = sin->sin_port;
             }
-            uv_err = uv_udp_connect(&io_ctx->server.udp, dial_ai->ai_addr);
-            if (uv_err != 0) {
-                ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: uv_udp_connect failed: %s",
-                         service_ctx->service_name, client_identity, uv_err_name(uv_err));
-                err = true;
-                goto done;
-            }
-            uv_err = uv_udp_recv_start(&io_ctx->server.udp, alloc_buffer, on_hosted_udp_server_data);
-            if (uv_err != 0) {
-                ZITI_LOG(ERROR, "hosted_service[%s] client[%s]: uv_udp_recv_start failed: %s",
-                         service_ctx->service_name, client_identity, uv_err_name(uv_err));
-                err = true;
-                goto done;
-            }
+            ip_addr_t dst;
+            struct sockaddr_in *dest_sin = (struct sockaddr_in *)dial_ai->ai_addr;
+            ipaddr_aton(host, &dst); // todo use dial_ai so forwarding works
+            udp_connect(io_ctx->lwip_server.udp, &dst, dest_sin->sin_port);
             if (ziti_accept(clt, on_hosted_client_connect_complete, on_hosted_client_data) != ZITI_OK) {
                 ZITI_LOG(ERROR, "ziti_accept failed");
                 err = true;

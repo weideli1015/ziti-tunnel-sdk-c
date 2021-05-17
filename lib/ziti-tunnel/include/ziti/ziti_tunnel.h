@@ -201,6 +201,16 @@ extern void ziti_tunneler_dial_completed(struct io_ctx_s *io_context, bool ok);
 extern ssize_t ziti_tunneler_write(tunneler_io_context tnlr_io_ctx, const void *data, size_t len);
 
 struct write_ctx_s;
+typedef void (*ack_fn)(struct write_ctx_s *write_ctx);
+struct write_ctx_s {
+    struct pbuf * pbuf;
+    union {
+        struct tcp_pcb *tcp;
+        struct udp_pcb *udp;
+    };
+    ack_fn ack;
+};
+
 extern void ziti_tunneler_ack(struct write_ctx_s *write_ctx);
 
 extern int ziti_tunneler_close(tunneler_io_context tnlr_io_ctx);

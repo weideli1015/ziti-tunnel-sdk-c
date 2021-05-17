@@ -75,19 +75,6 @@ struct tunneler_io_ctx_s {
 
 extern void free_tunneler_io_context(tunneler_io_context *tnlr_io_ctx_p);
 
-struct write_ctx_s;
-
-typedef void (*ack_fn)(struct write_ctx_s *write_ctx);
-
-struct write_ctx_s {
-    struct pbuf * pbuf;
-    union {
-        struct tcp_pcb *tcp;
-        struct udp_pcb *udp;
-    };
-    ack_fn ack;
-};
-
 const char* assign_ip(const char *hostname);
 
 extern int add_route(netif_driver tun, address_t *dest);

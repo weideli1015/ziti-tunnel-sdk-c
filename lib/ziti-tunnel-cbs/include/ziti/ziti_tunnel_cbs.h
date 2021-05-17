@@ -3,6 +3,8 @@
 
 #include "ziti/ziti_tunnel.h"
 #include "ziti/ziti.h"
+#include "lwip/tcp.h"
+#include "lwip/udp.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,7 +71,11 @@ struct hosted_io_ctx_s {
     union {
         uv_tcp_t tcp;
         uv_udp_t udp;
-    } server;
+    } uv_server;
+    union {
+        struct tcp_pcb *tcp;
+        struct udp_pcb *udp;
+    } lwip_server;
     bool ziti_eof;
     bool tcp_eof;
 };
