@@ -629,12 +629,13 @@ static void on_hosted_client_connect(ziti_connection serv, ziti_connection clt, 
                 struct sockaddr_in *sin = (struct sockaddr_in *)source_ai->ai_addr;
                 ipaddr_aton(source_addr, &src_ip);
                 ip_addr_set_ipaddr(&io_ctx->lwip_server.udp->local_ip, &src_ip);
-                io_ctx->lwip_server.udp->local_port = sin->sin_port;
+                io_ctx->lwip_server.udp->local_port = lwip_ntohs(sin->sin_port);
             }
             ip_addr_t dst;
             struct sockaddr_in *dest_sin = (struct sockaddr_in *)dial_ai->ai_addr;
-            ipaddr_aton(host, &dst); // todo use dial_ai so forwarding works
-            udp_connect(io_ctx->lwip_server.udp, &dst, dest_sin->sin_port);
+            ipaddr_aton(/*host*/"172.12.0.1", &dst); // todo use dial_ai so forwarding works
+            // todo sysctl net.ipv4.conf.tun0.route_localnet=1 if dst is 127/8
+            udp_connect(io_ctx->lwip_server.udp, &dst, lwip_ntohs(dest_sin->sin_port));
             if (ziti_accept(clt, on_hosted_client_connect_complete, on_hosted_client_data) != ZITI_OK) {
                 ZITI_LOG(ERROR, "ziti_accept failed");
                 err = true;
