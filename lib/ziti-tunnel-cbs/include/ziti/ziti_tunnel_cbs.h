@@ -3,8 +3,6 @@
 
 #include "ziti/ziti_tunnel.h"
 #include "ziti/ziti.h"
-#include "lwip/tcp.h"
-#include "lwip/udp.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -100,19 +98,6 @@ typedef struct ziti_host_s {
 ziti_host_t *new_ziti_host(ziti_context ztx, ziti_service *service);
 void free_ziti_host(ziti_host_t *zh_ctx);
 host_ctx_t *new_host_ctx(tunneler_context tnlr_ctx, ziti_host_t *zh_ctx);
-
-struct hosted_io_ctx_s_to_be_replaced_with_io_ctx_s {
-    struct hosted_service_ctx_s *service;
-    ziti_connection client;
-    char server_dial_str[64];
-    int server_proto_id;
-    union {
-        struct tcp_pcb *tcp;
-        struct udp_pcb *udp;
-    } lwip_server;
-    bool ziti_eof;
-    bool tcp_eof;
-};
 
 typedef void (*command_cb)(const tunnel_result *, void *ctx);
 typedef struct {
