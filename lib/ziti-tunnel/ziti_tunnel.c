@@ -379,7 +379,7 @@ static bool get_dial_address(const host_ctx_t *h_ctx, const hosted_client_info_t
 
 static bool get_source_address(const host_ctx_t *h_ctx, const hosted_client_info_t *client,
                                address_t *addr, u16_t *port) {
-    const char *source_addr = client->source_addr;
+    char *source_addr = NULL;
     const char *port_sep = strchr(client->source_addr, ':');
     if (port_sep != NULL) {
         const char *port_str = port_sep + 1;
@@ -390,17 +390,22 @@ static bool get_source_address(const host_ctx_t *h_ctx, const hosted_client_info
                     h_ctx->service_name, client->identity, client->source_addr);
             return false;
         }
-        source_addr = strndup(client->source_addr, port_sep - client->source_addr);
+        size_t source_addr_len = port_sep - client->source_addr;
+        source_addr = malloc(source_addr_len + 1);
+        memcpy(source_addr, client->source_addr, port_sep - client->source_addr);
+        source_addr[source_addr_len + 1] = '\0';
+    } else {
+        *port = 0;
     }
 
-    bool r = parse_address_r(addr, source_addr, h_ctx->tnlr_ctx->dns);
+    bool r = parse_address_r(addr, source_addr ? source_addr : client->source_addr, h_ctx->tnlr_ctx->dns);
     if (!r) {
         TNL_LOG(ERR, "hosted_service[%s] client[%s] failed to parse source_addr '%s'",
                 h_ctx->service_name, client->identity, source_addr);
     }
 
-    if (source_addr != client->source_addr) {
-        free((char *) source_addr);
+    if (source_addr) {
+        free(source_addr);
     }
 
     return r;
