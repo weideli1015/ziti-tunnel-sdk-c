@@ -36,6 +36,29 @@ struct intercept_ctx_s {
     STAILQ_ENTRY(intercept_ctx_s) entries;
 };
 
+typedef struct host_ctx_s {
+    tunneler_context tnlr_ctx;
+    const char *service_name;
+    void *app_host_ctx;
+    char display_address[64];
+    bool forward_protocol;
+    union {
+        protocol_list_t allowed_protocols;
+        char *protocol;
+    } proto_u;
+    bool forward_address;
+    union {
+        address_list_t allowed_addresses;
+        char *address;
+    } addr_u;
+    bool forward_port;
+    union {
+        port_range_list_t allowed_port_ranges;
+        uint16_t port;
+    } port_u;
+    address_list_t    allowed_source_addresses;
+} host_ctx_t;
+
 typedef struct tunneler_ctx_s {
     tunneler_sdk_options opts; // this must be first - it is accessed opaquely through tunneler_context*
     struct netif netif;
@@ -53,16 +76,11 @@ typedef struct tunneler_ctx_s {
 /** return the intercept context for a packet based on its destination ip:port */
 extern intercept_ctx_t *lookup_intercept_by_address(tunneler_context tnlr_ctx, const char *protocol, ip_addr_t *dst_addr, int dst_port);
 
-typedef enum  {
-    tun_tcp,
-    tun_udp
-} tunneler_proto_type;
-
 struct tunneler_io_ctx_s {
     tunneler_context    tnlr_ctx;
     const char *        service_name;
-    char                client[64];
-    char                intercepted[64];
+    char                client[64]; // intercepted client's src address or ziti identity for hosting
+    char                intercepted[64]; // dest address that was intercepted.
     tunneler_proto_type proto;
     union {
         struct tcp_pcb *tcp;
@@ -74,6 +92,16 @@ struct tunneler_io_ctx_s {
 };
 
 extern void free_tunneler_io_context(tunneler_io_context *tnlr_io_ctx_p);
+
+typedef void (*ack_fn)(struct write_ctx_s *write_ctx);
+struct write_ctx_s {
+    struct pbuf * pbuf;
+    union {
+        struct tcp_pcb *tcp;
+        struct udp_pcb *udp;
+    };
+    ack_fn ack;
+};
 
 const char* assign_ip(const char *hostname);
 

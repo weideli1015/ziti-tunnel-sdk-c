@@ -203,12 +203,11 @@ static int run_tunnel(uv_loop_t *ziti_loop, uint32_t tun_ip, const char *ip_rang
 
     tunneler_sdk_options tunneler_opts = {
             .netif_driver = tun,
+            .ziti_accept = ziti_sdk_c_accept,
             .ziti_dial = ziti_sdk_c_dial,
             .ziti_close = ziti_sdk_c_close,
             .ziti_close_write = ziti_sdk_c_close_write,
             .ziti_write = ziti_sdk_c_write,
-            .ziti_host = ziti_sdk_c_host
-
     };
 
     tunneler_context tunneler = ziti_tunneler_init(&tunneler_opts, ziti_loop);

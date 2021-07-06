@@ -33,6 +33,7 @@ struct ziti_instance_s {
 
     ziti_context ztx;
     model_map intercepts;
+    model_map hosts;
     LIST_ENTRY(ziti_instance_s) _next;
 };
 

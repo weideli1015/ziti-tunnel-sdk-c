@@ -11,6 +11,13 @@ extern ssize_t tunneler_tcp_write(struct tcp_pcb *pcb, const void *data, size_t 
 
 extern void tunneler_tcp_dial_completed(struct io_ctx_s *io, bool ok);
 
+extern void tunneler_tcp_hosted_client_ready(io_ctx_t *io, bool ok);
+
+/** initiates connection to a hosted server */
+extern struct tcp_pcb *tunneler_tcp_dial_host(host_ctx_t *h_ctx, io_ctx_t *io,
+                                              ip_addr_t *dst_ip, u16_t dst_port,
+                                              ip_addr_t *src_ip, u16_t src_port);
+
 extern u8_t recv_tcp(void *tnlr_ctx_arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr);
 
 extern void tunneler_tcp_ack(struct write_ctx_s *write_ctx);

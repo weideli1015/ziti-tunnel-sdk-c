@@ -269,6 +269,74 @@ static tunneler_io_context new_tunneler_io_context(tunneler_context tnlr_ctx, co
     return ctx;
 }
 
+/** associate io with host_ctx until client is accepted */
+typedef struct {
+    io_ctx_t *io; // must be first, since io is accessed without wrapper struct in on_tcp_client_err for hosted connections
+    host_ctx_t *h_ctx;
+} pending_conn_ctx;
+
+/** called by lwip when connection to hosted server is established. err is always ERR_OK */
+static err_t tunneler_tcp_hosted_dial_complete(void *pending_ctx, struct tcp_pcb *pcb, err_t err) {
+    pending_conn_ctx *ctx = pending_ctx;
+    void *zh_ctx = get_app_host_ctx(ctx->h_ctx);
+    ctx->io->tnlr_io->tnlr_ctx->opts.ziti_accept(zh_ctx, ctx->io);
+
+    // set callback argument to the io context now that we no longer need the host context.
+    tcp_arg(pcb, ctx->io);
+
+    /* the server is now connected and can now send data, but the ziti client won't be
+     * ready until the client is accepted. don't set the recv callback here - do it
+     * in tunneler_tcp_hosted_client_ready when we are sure the client is ready. in the
+     * meantime, we (lwip) will not acknowledge any data received from the server. */
+    tcp_recv(pcb, NULL);
+    return ERR_OK;
+}
+
+/** mark a connection as ready for data. called by ziti sdk accept_cb */
+void tunneler_tcp_hosted_client_ready(io_ctx_t *io, bool ok) {
+    if (!ok) {
+        TNL_LOG(DEBUG, "hosted_service[%s] client[%s] client was not accepted. aborting server connection",
+                io->tnlr_io->service_name, io->tnlr_io->client);
+        tcp_abort(io->tnlr_io->tcp);
+        return;
+    }
+    tcp_recv(io->tnlr_io->tcp, on_tcp_client_data);
+}
+
+struct tcp_pcb *tunneler_tcp_dial_host(host_ctx_t *h_ctx, io_ctx_t *io,
+                                       ip_addr_t *dst_ip, u16_t dst_port,
+                                       ip_addr_t *src_ip, u16_t src_port) {
+    io->tnlr_io->tcp = tcp_new();
+    if (!io->tnlr_io->tcp) {
+        TNL_LOG(ERR, "tcp_new failed");
+        return NULL;
+    }
+
+    pending_conn_ctx *pending_ctx = malloc(sizeof(pending_conn_ctx));
+    pending_ctx->io = io;
+    pending_ctx->h_ctx = h_ctx;
+    tcp_arg(io->tnlr_io->tcp, pending_ctx);
+    tcp_err(io->tnlr_io->tcp, on_tcp_client_err);
+    err_t err;
+    if (src_ip) {
+        if ((err = tcp_bind(io->tnlr_io->tcp, src_ip, src_port)) != ERR_OK) {
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] tcp_bind(%s:%d) failed: err=%d",
+                    h_ctx->service_name, io->tnlr_io->client,
+                    ipaddr_ntoa(src_ip), src_port, err);
+            tcp_free(io->tnlr_io->tcp);
+            return NULL;
+        }
+    }
+    err = tcp_connect(io->tnlr_io->tcp, dst_ip, dst_port, tunneler_tcp_hosted_dial_complete);
+    if (err != ERR_OK) {
+        TNL_LOG(ERR, "hosted_service[%s] client[%s] tcp_connect to %s:%d failed: %s",
+                h_ctx->service_name, io->tnlr_io->client);
+        tcp_free(io->tnlr_io->tcp);
+        return NULL;
+    }
+    return io->tnlr_io->tcp;
+}
+
 /** called by lwip when a tcp segment arrives. return 1 to indicate that the IP packet was consumed. */
 u8_t recv_tcp(void *tnlr_ctx_arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr) {
     tunneler_context tnlr_ctx = tnlr_ctx_arg;
@@ -341,6 +409,11 @@ u8_t recv_tcp(void *tnlr_ctx_arg, struct raw_pcb *pcb, struct pbuf *p, const ip_
             }
             LWIP_ASSERT("tcp_input: pcb->next != pcb (after cache)", tpcb->next != tpcb);
             return 0;
+        }
+        // prevent lwip from acking the peer's syn/ack if the src/dst matches a pending connection.
+        if (tpcb->state == SYN_SENT && flags & (TCP_SYN|TCP_ACK)) {
+            // todo loop through pending connections
+            goto done;
         }
         prev = tpcb;
     }

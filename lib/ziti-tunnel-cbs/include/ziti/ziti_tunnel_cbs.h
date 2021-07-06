@@ -63,15 +63,49 @@ typedef struct ziti_io_ctx_s {
     bool tnlr_eof;
 } ziti_io_context;
 
-struct hosted_io_ctx_s {
+typedef int (*cfg_parse_fn)(void *, const char *, size_t);
+typedef void* (*cfg_alloc_fn)();
+typedef void (*cfg_free_fn)(void *);
+
+typedef struct cfgtype_desc_s {
+    const char *name;
+    cfg_type_e cfgtype;
+    cfg_alloc_fn alloc;
+    cfg_free_fn free;
+    cfg_parse_fn parse;
+} cfgtype_desc_t;
+
+#define CFGTYPE_DESC(name, cfgtype, type) { (name), (cfgtype), (cfg_alloc_fn)alloc_##type, (cfg_free_fn)free_##type, (cfg_parse_fn)parse_##type }
+
+static struct cfgtype_desc_s intercept_cfgtypes[] = {
+        CFGTYPE_DESC("intercept.v1", INTERCEPT_CFG_V1, ziti_intercept_cfg_v1),
+        CFGTYPE_DESC("ziti-tunneler-client.v1", CLIENT_CFG_V1, ziti_client_cfg_v1)
+};
+
+static struct cfgtype_desc_s host_cfgtypes[] = {
+        CFGTYPE_DESC("host.v1", HOST_CFG_V1, ziti_host_cfg_v1),
+        CFGTYPE_DESC("ziti-tunneler-server.v1", SERVER_CFG_V1, ziti_server_cfg_v1)
+};
+
+typedef struct ziti_host_s {
+    const char *service_name;
+    ziti_context ztx;
+    cfg_type_e cfg_type;
+    union {
+        ziti_host_cfg_v1 host_v1;
+        ziti_server_cfg_v1 server_v1;
+    } cfg;
+} ziti_host_t;
+
+ziti_host_t *new_ziti_host(ziti_context ztx, ziti_service *service);
+void free_ziti_host(ziti_host_t *zh_ctx);
+host_ctx_t *new_host_ctx(tunneler_context tnlr_ctx, ziti_host_t *zh_ctx);
+
+struct hosted_io_ctx_s_to_be_replaced_with_io_ctx_s {
     struct hosted_service_ctx_s *service;
     ziti_connection client;
     char server_dial_str[64];
     int server_proto_id;
-    union {
-        uv_tcp_t tcp;
-        uv_udp_t udp;
-    } uv_server;
     union {
         struct tcp_pcb *tcp;
         struct udp_pcb *udp;
@@ -92,6 +126,8 @@ typedef struct {
   */
 char *string_replace(char *source, size_t sourceSize, const char *substring, const char *with);
 
+ssize_t on_ziti_data(ziti_connection conn, uint8_t *data, ssize_t len);
+
 /** called by tunneler SDK after a client connection is intercepted */
 void *ziti_sdk_c_dial(const void *app_intercept_ctx, struct io_ctx_s *io);
 
@@ -103,11 +139,12 @@ ssize_t ziti_sdk_c_write(const void *ziti_io_ctx, void *write_ctx, const void *d
 int ziti_sdk_c_close(void *io_ctx);
 int ziti_sdk_c_close_write(void *io_ctx);
 
-host_ctx_t *ziti_sdk_c_host(void *ziti_ctx, uv_loop_t *loop, const char *service_name, cfg_type_e cfgtype, const void *cfg);
+bool ziti_sdk_c_accept(const void *app_host_ctx, struct io_ctx_s *io);
 
 /** passed to ziti-sdk via ziti_options.service_cb */
 tunneled_service_t *ziti_sdk_c_on_service(ziti_context ziti_ctx, ziti_service *service, int status, void *tnlr_ctx);
 
+void ziti_conn_close_cb(ziti_connection zc);
 
 const ziti_tunnel_ctrl* ziti_tunnel_init_cmd(uv_loop_t *loop, tunneler_context, command_cb);
 

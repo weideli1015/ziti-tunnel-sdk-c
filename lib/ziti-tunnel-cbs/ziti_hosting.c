@@ -28,461 +28,56 @@ limitations under the License.
 #include <memory.h>
 #include <ziti/ziti_tunnel_cbs.h>
 
-/********** hosting **********/
-
-
-static void ziti_conn_close_cb(ziti_connection zc) {
-    struct hosted_io_ctx_s *io_ctx = ziti_conn_data(zc);
-    if (io_ctx) {
-        ZITI_LOG(TRACE, "hosted_service[%s] client[%s] ziti_conn[%p] closed",
-                 io_ctx->service->service_name, ziti_conn_source_identity(zc), zc);
-        free(io_ctx);
-        ziti_conn_set_data(zc, NULL);
-    } else {
-        ZITI_LOG(TRACE, "ziti_conn[%p] is closed", zc);
-    }
-}
-
-/** called by ziti SDK when a ziti client write (to a hosted tcp server) is completed */
-static void on_hosted_tcp_client_write(uv_write_t *req, int status) {
-    free(req->data);
-    free(req);
-}
-
-/** */
-static void on_hosted_udp_client_write(uv_udp_send_t* req, int status) {
-    free(req->data);
-    free(req);
-}
-
 #define safe_free(p) if ((p) != NULL) free((p))
 
-#define STAILQ_CLEAR(slist_head, free_fn) do { \
-    while (!STAILQ_EMPTY(slist_head)) { \
-        void *elem = STAILQ_FIRST(slist_head); \
-        STAILQ_REMOVE_HEAD((slist_head), entries); \
-        free_fn(elem); \
-    } \
-} while(0);
-
-static void free_hosted_service_ctx(struct hosted_service_ctx_s *hosted_ctx) {
-    if (hosted_ctx == NULL) {
+void free_ziti_host(ziti_host_t *zh_ctx) {
+    if (zh_ctx == NULL) {
         return;
     }
-    safe_free(hosted_ctx->service_name);
-    switch (hosted_ctx->cfg_type) {
+    safe_free((char *)zh_ctx->service_name);
+    switch (zh_ctx->cfg_type) {
         case HOST_CFG_V1:
-            free_ziti_host_cfg_v1((ziti_host_cfg_v1 *)hosted_ctx->cfg);
+            free_ziti_host_cfg_v1(&zh_ctx->cfg.host_v1);
             break;
         case SERVER_CFG_V1:
-            free_ziti_server_cfg_v1((ziti_server_cfg_v1 *)hosted_ctx->cfg);
+            free_ziti_server_cfg_v1(&zh_ctx->cfg.server_v1);
             break;
         default:
-            ZITI_LOG(DEBUG, "unexpected cfg_type %d", hosted_ctx->cfg_type);
+            ZITI_LOG(DEBUG, "unexpected cfg_type %d", zh_ctx->cfg_type);
             break;
     }
 
-    if (hosted_ctx->forward_protocol) {
-        STAILQ_CLEAR(&hosted_ctx->proto_u.allowed_protocols, safe_free);
-    }
-
-    if (hosted_ctx->forward_address) {
-        STAILQ_CLEAR(&hosted_ctx->addr_u.allowed_addresses, safe_free);
-    }
-
-    if (hosted_ctx->forward_port) {
-        STAILQ_CLEAR(&hosted_ctx->port_u.allowed_port_ranges, safe_free);
-    }
-
-    STAILQ_CLEAR(&hosted_ctx->allowed_source_addresses, safe_free);
-}
-
-static void hosted_server_close_cb(uv_handle_t *handle) {
-    struct hosted_io_ctx_s *io_ctx = handle->data;
-    if (io_ctx->client) {
-        ziti_close(io_ctx->client, ziti_conn_close_cb);
-        ZITI_LOG(TRACE, "hosted_service[%s] client[%s] server_conn[%p] closed",
-                 io_ctx->service->service_name, ziti_conn_source_identity(io_ctx->client), handle);
-    } else {
-        ZITI_LOG(TRACE, "server_conn[%p] closed", handle);
-        safe_free(handle->data);
-        handle->data = NULL;
-    }
-}
-
-static void tcp_shutdown_cb(uv_shutdown_t *req, int res) {
-    free(req);
-}
-
-#define safe_close(h, cb) if(!uv_is_closing((uv_handle_t*)h)) uv_close((uv_handle_t*)h, cb)
-static void hosted_server_close(struct hosted_io_ctx_s *io_ctx) {
-    if (io_ctx == NULL) {
-        return;
-    }
-    switch (io_ctx->server_proto_id) {
-        case IPPROTO_TCP:
-            //safe_close(&io_ctx->server.tcp, hosted_server_close_cb);
-            break;
-        case IPPROTO_UDP:
-            if (io_ctx->lwip_server.udp != NULL) {
-                udp_remove(io_ctx->lwip_server.udp);
-                io_ctx->lwip_server.udp = NULL;
-            }
-            break;
-    }
-    if (io_ctx->client) {
-        ziti_close(io_ctx->client, ziti_conn_close_cb);
-    }
-}
-
-static void hosted_server_shutdown(struct hosted_io_ctx_s *io_ctx) {
-    if (io_ctx->server_proto_id == IPPROTO_TCP) {
-        uv_shutdown_t *shut = calloc(1, sizeof(uv_shutdown_t));
-        //uv_shutdown(shut, (uv_stream_t *) &io_ctx->server.tcp, tcp_shutdown_cb);
-    }
-}
-
-/* called by ziti sdk when a client of a hosted service sends data */
-static ssize_t on_hosted_client_data(ziti_connection clt, uint8_t *data, ssize_t len) {
-    struct hosted_io_ctx_s *io_ctx = ziti_conn_data(clt);
-    if (io_ctx == NULL) {
-        ZITI_LOG(DEBUG, "null io");
-        if (len > 0) {
-            ZITI_LOG(DEBUG, "closing ziti connection");
-            ziti_close(clt, ziti_conn_close_cb);
-        }
-        return 0;
-    }
-
-    if (len > 0) {
-        char *copy = malloc(len);
-        memcpy(copy, data, len);
-        uv_buf_t buf = uv_buf_init(copy, len);
-        switch (io_ctx->server_proto_id) {
-            case IPPROTO_TCP: {
-                uv_write_t *req = malloc(sizeof(uv_write_t));
-                req->data = copy;
-                ZITI_LOG(DEBUG, "hosted_service[%s] client[%s] server[%s] writing %d bytes",
-                         io_ctx->service->service_name, ziti_conn_source_identity(clt), io_ctx->server_dial_str, len);
-//                int err = uv_write(req, (uv_stream_t *) &io_ctx->server.tcp, &buf, 1, on_hosted_tcp_client_write);
-//                if (err < 0) {
-//                    ZITI_LOG(ERROR, "uv_write failed: %s", uv_err_name(err));
-//                    on_hosted_tcp_client_write(req, err);
-//               }
-            }
-                break;
-            case IPPROTO_UDP: {
-                struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
-                p->payload = data; // todo why copy here vs pointer assignment? also see tunnel_udp.c
-                /* use udp_sendto_if_src even though local and remote addresses are in pcb, because
-                 * udp_send verifies that the dest IP matches the netif's IP, and fails with ERR_RTE.
-                 */
-                err_t err = udp_sendto_if_src(io_ctx->lwip_server.udp, p,
-                                              &io_ctx->lwip_server.udp->remote_ip,
-                                              io_ctx->lwip_server.udp->remote_port,
-                                              netif_default,
-                                              &io_ctx->lwip_server.udp->local_ip);
-                pbuf_free(p);
-            }
-                break;
-            default:
-                ZITI_LOG(ERROR, "invalid protocol %d in server config for service %s", io_ctx->server_proto_id, io_ctx->service->service_name);
-                break;
-        }
-    }
-    else if (len == ZITI_EOF) {
-        // client will not send more data, but should send one more message for connection closed.
-        ZITI_LOG(DEBUG, "hosted_service[%s] client[%s] sent EOF, ziti_eof=%d, tcp_eof=%d", io_ctx->service->service_name,
-                 ziti_conn_source_identity(clt), io_ctx->ziti_eof, io_ctx->tcp_eof);
-        io_ctx->ziti_eof = true;
-        if (io_ctx->tcp_eof) {
-            // server has also sent EOF, so close both sides now
-            hosted_server_close(io_ctx);
-        } else {
-            // server can still send data, and ziti can still receive
-            hosted_server_shutdown(io_ctx);
-        }
-    }
-    else {
-        ZITI_LOG(DEBUG, "client status %s. closing server connection", ziti_errorstr(len));
-        hosted_server_close(io_ctx);
-    }
-    return len;
-}
-
-#define ZITI_MTU (15 * 1024)
-static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
-    *buf = uv_buf_init((char*) malloc(ZITI_MTU), ZITI_MTU);
-}
-
-/** called by ziti SDK when data transfer initiated by ziti_write completes */
-static void on_hosted_ziti_write(ziti_connection ziti_conn, ssize_t len, void *ctx) {
-    if (len > 0) {
-        ziti_tunneler_ack(ctx);
-    }
-    free(ctx);
-}
-
-/** called by libuv when a hosted TCP server sends data to a client */
-static void on_hosted_tcp_server_data(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
-    struct hosted_io_ctx_s *io_ctx = stream->data;
-    if (io_ctx == NULL) {
-        ZITI_LOG(ERROR, "null io_ctx");
-        if (buf->base) free(buf->base);
-        uv_close((uv_handle_t *) stream, NULL);
-        return;
-    }
-
-    if (nread > 0) {
-        int zs = ziti_write(io_ctx->client, buf->base, nread, on_hosted_ziti_write, buf->base);
-        if (zs != ZITI_OK) {
-            ZITI_LOG(ERROR, "ziti_write to %s failed: %s", ziti_conn_source_identity(io_ctx->client),
-                     ziti_errorstr(zs));
-            on_hosted_ziti_write(io_ctx->client, nread, buf->base);
-            // close both sides
-            hosted_server_close(io_ctx);
-        }
-    } else {
-        if (nread == UV_ENOBUFS) {
-            ZITI_LOG(WARN, "tcp server is throttled: could not allocate buffer for incoming data [%zd](%s)", nread, uv_strerror(nread));
-        } else if (nread == UV_EOF) {
-            ZITI_LOG(DEBUG, "server sent FIN ziti_eof=%d, tcp_eof=%d, io=%p", io_ctx->ziti_eof, io_ctx->tcp_eof, io_ctx);
-            io_ctx->tcp_eof = true;
-            if (io_ctx->ziti_eof) {
-                // ziti client has also sent EOF, so close both sides now
-                hosted_server_close(io_ctx);
-            } else {
-                // server will not send more data, but ziti may.
-                ziti_close_write(io_ctx->client);
-//                uv_read_stop((uv_stream_t *) &io_ctx->server.tcp);
-            }
-        } else {
-            ZITI_LOG(WARN, "error reading from server [%zd](%s)", nread, uv_strerror(nread));
-            hosted_server_close(io_ctx);
-        }
-
-        if (buf->base)
-            free(buf->base);
-    }
-}
-
-// todo combine with intercept packet handling
-static void hosted_udp_ack(struct write_ctx_s *write_ctx) {
-    pbuf_free(write_ctx->pbuf);
-}
-/** called by lwip when a hosted UDP server sends data to a client. */
-static void on_hosted_udp_lwip_server_data(void *io_ctx, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *src_ip, u16_t src_port) {
-    struct hosted_io_ctx_s *io = io_ctx;
-    if (p->len > 0) {
-        struct write_ctx_s *wctx = calloc(1, sizeof(struct write_ctx_s));
-        wctx->udp = io->lwip_server.udp;
-        wctx->pbuf = p;
-        wctx->ack = hosted_udp_ack;
-        int zs = ziti_write(io->client, p->payload, p->len, on_hosted_ziti_write, p);
-        if (zs != ZITI_OK) {
-            on_hosted_ziti_write(io->client, p->len, p->payload);
-            hosted_server_close(io);
-        }
-    }
-}
-
-/** called by libuv when a hosted UDP server sends data to a client */
-static void on_hosted_udp_server_data(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf, const struct sockaddr* addr, unsigned flags) {
-    struct hosted_io_ctx_s *io_ctx = handle->data;
-    if (nread > 0) {
-        int zs = ziti_write(io_ctx->client, buf->base, nread, on_hosted_ziti_write, buf->base);
-        if (zs != ZITI_OK) {
-            ZITI_LOG(ERROR, "ziti_write failed: %s", ziti_errorstr(zs));
-            on_hosted_ziti_write(io_ctx->client, nread, buf->base);
-            hosted_server_close(io_ctx);
-        }
-    } else if (addr == NULL && nread != 0) {
-        if (buf->base != NULL) {
-            free(buf->base);
-        }
-        ZITI_LOG(ERROR, "error receiving data from hosted service %s", io_ctx->service->service_name);
-        hosted_server_close(io_ctx);
-    }
 }
 
 /** called by ziti sdk when a client connection is established (or fails) */
 static void on_hosted_client_connect_complete(ziti_connection clt, int err) {
-    struct hosted_io_ctx_s *io_ctx = ziti_conn_data(clt);
+    io_ctx_t *io = ziti_conn_data(clt);
+    ziti_host_t *zh = get_app_host_ctx(io->service.host_ctx);
     if (err == ZITI_OK) {
-        ZITI_LOG(DEBUG, "hosted_service[%s] client[%s] connected", io_ctx->service->service_name, ziti_conn_source_identity(clt));
-        switch (io_ctx->server_proto_id) {
-            case IPPROTO_TCP:
-//                uv_read_start((uv_stream_t *) &io_ctx->server.tcp, alloc_buffer, on_hosted_tcp_server_data);
-                break;
-            case IPPROTO_UDP:
-                udp_recv(io_ctx->lwip_server.udp, on_hosted_udp_lwip_server_data, io_ctx);
-                break;
-        }
+        ZITI_LOG(DEBUG, "hosted_service[%s] client[%s] connected", zh->service_name, ziti_conn_source_identity(clt));
     } else {
-        ZITI_LOG(ERROR, "hosted_service[%s] client[%s] failed to connect: %s", io_ctx->service->service_name,
+        ZITI_LOG(ERROR, "hosted_service[%s] client[%s] failed to connect: %s", zh->service_name,
                  ziti_conn_source_identity(clt), ziti_errorstr(err));
     }
+    ziti_tunneler_ziti_accept_completed(io, err == ZITI_OK);
 }
 
-/**
- * called by libuv when a connection is established (or failed) with a TCP server
- *
- *  c is the uv_tcp_connect_t that was initialized in on_hosted_client_connect_complete
- *  c->handle is the uv_tcp_t (server stream) that was initialized in on_hosted_client_connect
+/** called by ziti sdk when a ziti endpoint (client) initiates connection to a hosted service
+ * - create hosted_client_info from client's app_data, if any
+ * - create io_ctx_t, populated with ziti connection
+ * - initiate connection with hosted service
  */
-static void on_hosted_tcp_server_connect_complete(uv_connect_t *c, int status) {
-    if (c == NULL || c->handle == NULL || c->handle->data == NULL) {
-        ZITI_LOG(ERROR, "null handle or io_ctx");
-    }
-    struct hosted_io_ctx_s *io_ctx = c->handle->data;
-    if (io_ctx->client == NULL) {
-        ZITI_LOG(ERROR, "client closed before server connection was established");
-        hosted_server_close(io_ctx);
-        free(c);
-        return;
-    }
-
-    if (status < 0) {
-        ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: connect to %s failed: %s", io_ctx->service->service_name,
-                 ziti_conn_source_identity(io_ctx->client), io_ctx->server_dial_str, uv_strerror(status));
-        hosted_server_close(io_ctx);
-        free(c);
-        return;
-    }
-    ZITI_LOG(DEBUG, "hosted_service[%s], client[%s]: connected to server %s", io_ctx->service->service_name,
-             ziti_conn_source_identity(io_ctx->client), io_ctx->server_dial_str);
-    ziti_accept(io_ctx->client, on_hosted_client_connect_complete, on_hosted_client_data);
-    free(c);
-}
-
-struct addrinfo_params_s {
-    const char *    address;
-    const char *    port;
-    char            _port_str[12]; // buffer used when config type uses int for port
-    struct addrinfo hints;
-    char            err[128];
-};
-
-static int get_protocol_id(const char *protocol) {
-    if (strcasecmp(protocol, "tcp") == 0) {
-        return IPPROTO_TCP;
-    } else if (strcasecmp(protocol, "udp") == 0) {
-        return IPPROTO_UDP;
-    }
-    return -1;
-}
-
-static const char *get_protocol_str(int protocol_id) {
-    switch (protocol_id) {
-        case IPPROTO_TCP:
-            return "tcp";
-        case IPPROTO_UDP:
-            return "udp";
-        default:
-            return "NUL";
-    }
-}
-
-static bool addrinfo_from_host_ctx(struct addrinfo_params_s *dial_params, const host_ctx_t *host_ctx, tunneler_app_data *app_data) {
-    const char *dial_protocol_str = NULL;
-
-    if (host_ctx->forward_protocol) {
-        dial_protocol_str = app_data->dst_protocol;
-        if (dial_protocol_str == NULL | dial_protocol_str[0] == '\0') {
-            snprintf(dial_params->err, sizeof(dial_params->err),
-                     "hosted_service[%s] config specifies 'forwardProtocol', but client didn't send %s",
-                     host_ctx->service_name, DST_PROTO_KEY);
-            return false;
-        }
-        if (!protocol_match(app_data->dst_protocol, &host_ctx->proto_u.allowed_protocols)) {
-            snprintf(dial_params->err, sizeof(dial_params->err),
-                     "hosted_service[%s] client requested protocol '%s' is not allowed", host_ctx->service_name,
-                     app_data->dst_protocol);
-            return false;
-        }
-        dial_protocol_str = app_data->dst_protocol;
-    } else {
-        dial_protocol_str = host_ctx->proto_u.protocol;
-    }
-
-    dial_params->hints.ai_protocol = get_protocol_id(dial_protocol_str);
-    if (dial_params->hints.ai_protocol < 0) {
-        snprintf(dial_params->err, sizeof(dial_params->err), "unsupported %s '%s'", DST_PROTO_KEY, dial_protocol_str);
-        return false;
-    }
-
-    if (host_ctx->forward_address) {
-        dial_params->address = app_data->dst_ip;
-        if (dial_params->address == NULL || dial_params->address[0] == '\0') {
-            snprintf(dial_params->err, sizeof(dial_params->err),
-                     "hosted_service[%s] config specifies 'forwardAddress' but client didn't send %s",
-                     host_ctx->service_name, DST_IP_KEY);
-            return false;
-        }
-        address_t *dst = parse_address(app_data->dst_ip, NULL);
-        if (dst == NULL) {
-            snprintf(dial_params->err, sizeof(dial_params->err),
-                     "hosted_service[%s] failed to parse requested address '%s'", host_ctx->service_name,
-                     app_data->dst_ip);
-            return false;
-        }
-        if (!address_match(&dst->ip, (address_list_t *)&host_ctx->addr_u.allowed_addresses)) {
-            snprintf(dial_params->err, sizeof(dial_params->err),
-                     "hosted_service[%s] client requested address '%s' is not allowed", host_ctx->service_name,
-                     dst->str);
-            free(dst);
-            return false;
-        }
-        free(dst);
-        dial_params->address = app_data->dst_ip;
-    } else {
-        dial_params->address = host_ctx->addr_u.address;
-    }
-
-    if (host_ctx->forward_port) {
-        int port = 0;
-        if (app_data->dst_port == NULL) {
-            snprintf(dial_params->err, sizeof(dial_params->err),
-                     "hosted_service[%s] config specifies 'forwardPort' but client didn't send %s",
-                     host_ctx->service_name, DST_PORT_KEY);
-            return false;
-        } else {
-            errno = 0;
-            port = (int)strtol(app_data->dst_port, NULL, 10);
-            if (errno != 0) {
-                snprintf(dial_params->err, sizeof(dial_params->err),
-                         "hosted_service[%s] client sent invalid %s '%s'", host_ctx->service_name,
-                         DST_PORT_KEY, app_data->dst_port);
-                return false;
-            }
-        }
-        if (!port_match(port, &host_ctx->port_u.allowed_port_ranges)) {
-            snprintf(dial_params->err, sizeof(dial_params->err),
-                     "hosted_service[%s] client requested port '%s' is not allowed", host_ctx->service_name,
-                     app_data->dst_port);
-            return false;
-        }
-        dial_params->port = app_data->dst_port;
-    } else {
-        snprintf(dial_params->_port_str, sizeof(dial_params->_port_str), "%d", host_ctx->port_u.port);
-        dial_params->port = dial_params->_port_str;
-    }
-
-    return true;
-}
-
-/** called by ziti sdk when a ziti endpoint (client) initiates connection to a hosted service */
 static void on_hosted_client_connect(ziti_connection serv, ziti_connection clt, int status, ziti_client_ctx *clt_ctx) {
-    struct hosted_service_ctx_s *service_ctx = ziti_conn_data(serv);
-
-    if (service_ctx == NULL) {
-        ZITI_LOG(ERROR, "null service_ctx");
+    host_ctx_t *h_ctx = ziti_conn_data(serv);
+    if (h_ctx == NULL) {
+        ZITI_LOG(ERROR, "null host_ctx");
         ziti_close(clt, ziti_conn_close_cb);
         return;
     }
+    ziti_host_t *zh = get_app_host_ctx(h_ctx);
 
     if (status != ZITI_OK) {
-        ZITI_LOG(ERROR, "incoming connection to service[%s] failed: %s", service_ctx->service_name, ziti_errorstr(status));
+        ZITI_LOG(ERROR, "incoming connection to service[%s] failed: %s", zh->service_name, ziti_errorstr(status));
         ziti_close(clt, ziti_conn_close_cb);
         return;
     }
@@ -490,191 +85,50 @@ static void on_hosted_client_connect(ziti_connection serv, ziti_connection clt, 
     const char *client_identity = clt_ctx->caller_id;
     if (client_identity == NULL) client_identity = "<unidentified>";
 
-    struct addrinfo *dial_ai = NULL, *source_ai = NULL;
-    struct hosted_io_ctx_s *io_ctx = NULL;
-    bool err = false;
-
-    tunneler_app_data app_data;
-    memset(&app_data, 0, sizeof(app_data));
+    hosted_client_info_t *client_p = NULL, client = {0};
+    tunneler_app_data app_data = {0};
     if (clt_ctx->app_data != NULL) {
-        ZITI_LOG(DEBUG, "hosted_service[%s], client[%s]: received app_data_json='%.*s'", service_ctx->service_name,
-                 client_identity, (int)clt_ctx->app_data_sz, clt_ctx->app_data);
-        if (parse_tunneler_app_data(&app_data, (char *)clt_ctx->app_data, clt_ctx->app_data_sz) != 0) {
+        ZITI_LOG(DEBUG, "hosted_service[%s], client[%s]: received app_data_json='%.*s'", zh->service_name,
+                 client_identity, (int) clt_ctx->app_data_sz, clt_ctx->app_data);
+        if (parse_tunneler_app_data(&app_data, (char *) clt_ctx->app_data, clt_ctx->app_data_sz) != 0) {
             ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: failed to parse app_data_json '%.*s'",
-                     service_ctx->service_name,
-                     client_identity, (int)clt_ctx->app_data_sz, clt_ctx->app_data);
-            err = true;
-            goto done;
+                     zh->service_name,
+                     client_identity, (int) clt_ctx->app_data_sz, clt_ctx->app_data);
+            ziti_close(clt, ziti_conn_close_cb);
         }
+        client_p = &client;
+        hosted_client_info_init(client_p, client_identity,
+                                app_data.dst_protocol, app_data.dst_ip, app_data.dst_port,
+                                app_data.dst_hostname,
+                                app_data.src_protocol, app_data.src_ip, app_data.src_port,
+                                app_data.source_addr);
     }
 
-    struct addrinfo_params_s dial_ai_params;
-    memset(&dial_ai_params, 0, sizeof(dial_ai_params));
-    int s = addrinfo_from_host_ctx(&dial_ai_params, service_ctx, &app_data);
-    if (!s) {
-        ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: failed to create dial addrinfo params: %s",
-                 service_ctx->service_name, client_identity, dial_ai_params.err);
-        err = true;
-        goto done;
-    }
 
-    dial_ai_params.hints.ai_flags = AI_ADDRCONFIG | AI_NUMERICSERV;
-    switch (dial_ai_params.hints.ai_protocol) {
-        case IPPROTO_TCP:
-            dial_ai_params.hints.ai_socktype = SOCK_STREAM;
-            break;
-        case IPPROTO_UDP:
-            dial_ai_params.hints.ai_socktype = SOCK_DGRAM;
-            break;
-    }
+    struct io_ctx_s *io = calloc(1, sizeof(struct io_ctx_s));
+    ziti_io_context *ziti_io = calloc(1, sizeof(ziti_io_context));
+    io->ziti_ctx = zh;
+    io->ziti_io = ziti_io;
+    ziti_io->ziti_conn = clt;
+    ziti_conn_set_data(clt, io);
 
-    if ((s = getaddrinfo(dial_ai_params.address, dial_ai_params.port, &dial_ai_params.hints, &dial_ai)) != 0) {
-        ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: getaddrinfo(%s,%s) failed: %s",
-                 service_ctx->service_name, client_identity, dial_ai_params.address, dial_ai_params.port, gai_strerror(s));
-        err = true;
-        goto done;
-    }
-    if (dial_ai->ai_next != NULL) {
-        ZITI_LOG(DEBUG, "hosted_service[%s], client[%s]: getaddrinfo(%s,%s) returned multiple results; using first",
-                 service_ctx->service_name, client_identity, dial_ai_params.address, dial_ai_params.port);
-    }
-
-    const char *dst_proto = app_data.dst_protocol;
-    const char *dst_ip = app_data.dst_ip;
-    const char *dst_port = app_data.dst_port;
-    if (dst_proto != NULL && dst_ip != NULL && dst_port != NULL) {
-        ZITI_LOG(INFO, "hosted_service[%s], client[%s] dst_addr[%s:%s:%s]: incoming connection",
-                 service_ctx->service_name, client_identity, dst_proto, dst_ip, dst_port);
-    } else {
-        ZITI_LOG(INFO, "hosted_service[%s], client[%s] incoming connection",
-                 service_ctx->service_name, client_identity);
-    }
-
-    const char *source_addr = app_data.source_addr;
-    if (source_addr != NULL && *source_addr != 0) {
-        struct addrinfo source_hints = {0};
-        const char *port_sep = strchr(source_addr, ':');
-        const char *source_port = NULL;
-        char source_ip_cp[64];
-        if (port_sep != NULL) {
-            source_port = port_sep + 1;
-            strncpy(source_ip_cp, source_addr, port_sep - source_addr);
-            source_ip_cp[port_sep - source_addr] = '\0';
-            source_addr = source_ip_cp;
-        }
-        source_hints.ai_flags = AI_ADDRCONFIG | AI_NUMERICHOST | AI_NUMERICSERV;
-        source_hints.ai_protocol = dial_ai_params.hints.ai_protocol;
-        source_hints.ai_socktype = dial_ai_params.hints.ai_socktype;
-        if ((s = getaddrinfo(source_addr, source_port, &source_hints, &source_ai)) != 0) {
-            ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: getaddrinfo(%s,%s) failed: %s",
-                     service_ctx->service_name, client_identity, source_addr, source_port, gai_strerror(s));
-            err = true;
-            goto done;
-        }
-        if (source_ai->ai_next != NULL) {
-            ZITI_LOG(DEBUG, "hosted_service[%s], client[%s]: getaddrinfo(%s,%s) returned multiple results; using first",
-                     service_ctx->service_name, client_identity, source_addr, source_port);
-        }
-    }
-
-    io_ctx = calloc(1, sizeof(struct hosted_io_ctx_s));
-    io_ctx->service = service_ctx;
-    io_ctx->client = clt;
-    io_ctx->server_proto_id = dial_ai->ai_protocol;
-    ziti_conn_set_data(clt, io_ctx);
-
-    char host[48];
-    char port[12];
-    s = getnameinfo(dial_ai->ai_addr, dial_ai->ai_addrlen, host, sizeof(host), port, sizeof(port),
-                    NI_NUMERICHOST | NI_NUMERICSERV);
-    if (s == 0) {
-        snprintf(io_ctx->server_dial_str, sizeof(io_ctx->server_dial_str), "%s:%s:%s",
-                 get_protocol_str(dial_ai->ai_protocol), host, port);
-    } else {
-        ZITI_LOG(WARN, "hosted_service[%s] client[%s] getnameinfo failed: %s", io_ctx->service->service_name,
-                 ziti_conn_source_identity(io_ctx->client), gai_strerror(s));
-        strncpy(io_ctx->server_dial_str, "<unknown>", sizeof(io_ctx->server_dial_str));
-    }
-
-    int uv_err;
-    switch (dial_ai->ai_protocol) {
-        case IPPROTO_TCP:
-//            uv_tcp_init(service_ctx->loop, &io_ctx->server.tcp);
-//            io_ctx->server.tcp.data = io_ctx;
-            if (source_ai != NULL) {
-//                uv_err = uv_tcp_bind(&io_ctx->server.tcp, source_ai->ai_addr, 0);
-                if (uv_err != 0) {
-                    ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: uv_tcp_bind failed: %s",
-                             service_ctx->service_name, client_identity, uv_err_name(uv_err));
-                    err = true;
-                    goto done;
-                }
-            }
-            {
-                uv_connect_t *c = malloc(sizeof(uv_connect_t));
-//                uv_err = uv_tcp_connect(c, &io_ctx->server.tcp, dial_ai->ai_addr, on_hosted_tcp_server_connect_complete);
-                if (uv_err != 0) {
-                    ZITI_LOG(ERROR, "hosted_service[%s], client[%s]: uv_tcp_connect failed: %s",
-                             service_ctx->service_name, client_identity, uv_err_name(uv_err));
-                    err = true;
-                    goto done;
-                }
-            }
-            break;
-        case IPPROTO_UDP:
-            io_ctx->lwip_server.udp = udp_new();
-            if (source_ai != NULL) {
-                // todo clean up address handling
-                ip_addr_t src_ip;
-                struct sockaddr_in *sin = (struct sockaddr_in *)source_ai->ai_addr;
-                ipaddr_aton(source_addr, &src_ip);
-                ip_addr_set_ipaddr(&io_ctx->lwip_server.udp->local_ip, &src_ip);
-                io_ctx->lwip_server.udp->local_port = lwip_ntohs(sin->sin_port);
-            }
-            ip_addr_t dst;
-            struct sockaddr_in *dest_sin = (struct sockaddr_in *)dial_ai->ai_addr;
-            ipaddr_aton(host, &dst); // todo use dial_ai so forwarding works
-            // todo packets to loopback addresses are flagged as martian. can be overcome with:
-            // - linux: sysctl net.ipv4.conf.tun0.route_localnet=1 if dst is 127/8
-            // - macOS: ???
-            // - windows: ??
-            udp_connect(io_ctx->lwip_server.udp, &dst, lwip_ntohs(dest_sin->sin_port));
-            if (ziti_accept(clt, on_hosted_client_connect_complete, on_hosted_client_data) != ZITI_OK) {
-                ZITI_LOG(ERROR, "ziti_accept failed");
-                err = true;
-                goto done;
-            }
-            break;
-    }
-
-    done:
-    if (err) {
-        hosted_server_close(io_ctx);
-    }
-    if (clt_ctx->app_data != NULL) {
-        free_tunneler_app_data(&app_data);
-    }
-    if (dial_ai != NULL) {
-        freeaddrinfo(dial_ai);
-    }
-    if (source_ai != NULL) {
-        freeaddrinfo(source_ai);
-    }
+    ziti_tunneler_dial_host(h_ctx, client_p, io);
 }
 
 /** called by ziti SDK when a hosted service listener is ready */
 static void hosted_listen_cb(ziti_connection serv, int status) {
-    struct hosted_service_ctx_s *host_ctx = ziti_conn_data(serv);
-    if (host_ctx == NULL) {
+    host_ctx_t *h_ctx = ziti_conn_data(serv);
+    if (h_ctx == NULL) {
         ZITI_LOG(DEBUG, "null host_ctx");
         return;
     }
 
     if (status != ZITI_OK) {
-        ZITI_LOG(ERROR, "unable to host service %s: %s", host_ctx->service_name, ziti_errorstr(status));
+        ziti_host_t *zh_ctx = get_app_host_ctx(h_ctx);
+        ZITI_LOG(ERROR, "unable to host service %s: %s", zh_ctx->service_name, ziti_errorstr(status));
         ziti_conn_set_data(serv, NULL);
         ziti_close(serv, ziti_conn_close_cb);
-        free_hosted_service_ctx(host_ctx);
+        host_ctx_free(h_ctx);
     }
 }
 
@@ -725,143 +179,149 @@ static void listen_opts_from_host_cfg_v1(ziti_listen_opts *opts, const ziti_host
     }
 }
 
-/** called by the tunneler sdk when a hosted service becomes available */
-host_ctx_t *ziti_sdk_c_host(void *ziti_ctx, uv_loop_t *loop, const char *service_name, cfg_type_e cfg_type, const void *cfg) {
-    if (service_name == NULL) {
+ziti_host_t *new_ziti_host(ziti_context ztx, ziti_service *service) {
+    ziti_host_t *zh_ctx = calloc(1, sizeof(ziti_host_t));
+    zh_ctx->ztx = ztx;
+    zh_ctx->service_name = service->name;
+    bool have_host = false;
+
+    for (int i = 0; i < sizeof(host_cfgtypes) / sizeof(cfgtype_desc_t); i++) {
+        cfgtype_desc_t *cfgtype = &host_cfgtypes[i];
+        const char *cfg_json = ziti_service_get_raw_config(service, cfgtype->name);
+        if (cfg_json != 0 && cfgtype->parse(&zh_ctx->cfg, cfg_json, strlen(cfg_json)) == 0) {
+            ZITI_LOG(INFO, "creating host context for service[%s] with %s = %s", service->name, cfgtype->name, cfg_json);
+            have_host = true;
+            zh_ctx->cfg_type = cfgtype->cfgtype;
+            break;
+        }
+    }
+
+    if (!have_host) {
+        free(zh_ctx);
+        return NULL;
+    }
+    return zh_ctx;
+}
+
+host_ctx_t *new_host_ctx(tunneler_context tnlr_ctx, ziti_host_t *zh_ctx) {
+    host_ctx_t *h_ctx = host_ctx_new(tnlr_ctx, zh_ctx->service_name, zh_ctx);
+
+    if (zh_ctx->service_name == NULL) {
         ZITI_LOG(ERROR, "null service_name");
         return NULL;
     }
 
-    struct hosted_service_ctx_s *host_ctx = calloc(1, sizeof(struct hosted_service_ctx_s));
-    host_ctx->service_name = strdup(service_name);
-    host_ctx->ziti_ctx = ziti_ctx;
-    host_ctx->loop = loop;
-    host_ctx->cfg_type = cfg_type;
-    host_ctx->cfg = cfg;
-
-    char *display_proto = "?", *display_addr = "?", display_port[12] = { '?', '\0' };
     ziti_listen_opts listen_opts;
     ziti_listen_opts *listen_opts_p = NULL;
-    switch (cfg_type) {
+    switch (zh_ctx->cfg_type) {
         case HOST_CFG_V1: {
-            const ziti_host_cfg_v1 *host_v1_cfg = cfg;
+            const ziti_host_cfg_v1 *host_v1_cfg = &zh_ctx->cfg.host_v1;
             listen_opts_from_host_cfg_v1(&listen_opts, host_v1_cfg);
             listen_opts_p = &listen_opts;
             int i;
 
-            host_ctx->forward_protocol = host_v1_cfg->forward_protocol;
             if (host_v1_cfg->forward_protocol) {
-                STAILQ_INIT(&host_ctx->proto_u.allowed_protocols);
                 string_array allowed_protos = host_v1_cfg->allowed_protocols;
                 for (i = 0; allowed_protos != NULL && allowed_protos[i] != NULL; i++) {
-                    protocol_t *p = calloc(1, sizeof(protocol_t));
-                    p->protocol = strdup(allowed_protos[i]);
-                    STAILQ_INSERT_TAIL(&host_ctx->proto_u.allowed_protocols, p, entries);
+                    host_ctx_add_allowed_protocol(h_ctx, allowed_protos[i]);
                 }
                 if (i == 0) {
                     ZITI_LOG(ERROR,
                              "hosted_service[%s] specifies 'forwardProtocol' with zero-length 'allowedProtocols'",
-                             host_ctx->service_name);
-                    free_hosted_service_ctx(host_ctx);
+                             zh_ctx->service_name);
+                    host_ctx_free(h_ctx);
                     return NULL;
                 }
             } else {
-                host_ctx->proto_u.protocol = host_v1_cfg->protocol;
-                display_proto = host_v1_cfg->protocol;
+                host_ctx_set_protocol(h_ctx, host_v1_cfg->protocol);
             }
 
-            host_ctx->forward_address = host_v1_cfg->forward_address;
+
             if (host_v1_cfg->forward_address) {
-                STAILQ_INIT(&host_ctx->addr_u.allowed_addresses);
                 string_array allowed_addrs = host_v1_cfg->allowed_addresses;
                 for (i = 0; allowed_addrs != NULL && allowed_addrs[i] != NULL; i++) {
-                    address_t *a = parse_address(allowed_addrs[i], NULL);
-                    if (a == NULL) {
+                    if (host_ctx_add_allowed_address(h_ctx, allowed_addrs[i]) == NULL) {
                         ZITI_LOG(ERROR, "hosted_service[%s] failed to parse allowed_address '%s'",
-                                 host_ctx->service_name, allowed_addrs[i]);
-                        free_hosted_service_ctx(host_ctx);
+                                 zh_ctx->service_name, allowed_addrs[i]);
+                        host_ctx_free(h_ctx);
                         return NULL;
                     }
-                    STAILQ_INSERT_TAIL(&host_ctx->addr_u.allowed_addresses, a, entries);
                 }
                 if (i == 0) {
                     ZITI_LOG(ERROR, "hosted_service[%s] specifies 'forwardAddress' with zero-length 'allowedAddresses'",
-                             host_ctx->service_name);
-                    free_hosted_service_ctx(host_ctx);
+                             zh_ctx->service_name);
+                    host_ctx_free(h_ctx);
                     return NULL;
                 }
             } else {
-                host_ctx->addr_u.address = host_v1_cfg->address;
-                display_addr = host_v1_cfg->address;
+                host_ctx_set_address(h_ctx, host_v1_cfg->address);
             }
 
-            host_ctx->forward_port = host_v1_cfg->forward_port;
             if (host_v1_cfg->forward_port) {
-                STAILQ_INIT(&host_ctx->port_u.allowed_port_ranges);
                 ziti_port_range_array port_ranges = host_v1_cfg->allowed_port_ranges;
                 for (i = 0; port_ranges != NULL && port_ranges[i] != NULL; i++) {
-                    port_range_t *pr = parse_port_range(port_ranges[i]->low, port_ranges[i]->high);
-                    STAILQ_INSERT_TAIL(&host_ctx->port_u.allowed_port_ranges, pr, entries);
+                    host_ctx_add_allowed_port_range(h_ctx, port_ranges[i]->low, port_ranges[i]->high);
                 }
                 if (i == 0) {
                     ZITI_LOG(ERROR, "hosted_service[%s] specifies 'forwardPort' with zero-length 'allowedPortRanges'",
-                             host_ctx->service_name);
-                    free_hosted_service_ctx(host_ctx);
-                }
-            } else {
-                host_ctx->port_u.port = host_v1_cfg->port;
-                snprintf(display_port, sizeof(display_port), "%d", host_v1_cfg->port);
-            }
-
-            STAILQ_INIT(&host_ctx->allowed_source_addresses);
-            string_array allowed_src_addrs = host_v1_cfg->allowed_source_addresses;
-            for (i = 0; allowed_src_addrs != NULL && allowed_src_addrs[i] != NULL; i++) {
-                address_t *a = parse_address(allowed_src_addrs[i], NULL);
-                if (a == NULL) {
-                    ZITI_LOG(ERROR, "hosted_service[%s] failed to parse allowed_source_address '%s'",
-                             host_ctx->service_name, allowed_src_addrs);
-                    free_hosted_service_ctx(host_ctx);
+                             zh_ctx->service_name);
+                    host_ctx_free(h_ctx);
                     return NULL;
                 }
-                STAILQ_INSERT_TAIL(&host_ctx->allowed_source_addresses, a, entries);
+            } else {
+                host_ctx_set_port(h_ctx, host_v1_cfg->port);
+            }
+
+            string_array allowed_src_addrs = host_v1_cfg->allowed_source_addresses;
+            for (i = 0; allowed_src_addrs != NULL && allowed_src_addrs[i] != NULL; i++) {
+                if (host_ctx_add_allowed_source_address(h_ctx, allowed_src_addrs[i]) == NULL) {
+                    ZITI_LOG(ERROR, "hosted_service[%s] failed to parse allowed_source_address '%s'",
+                             zh_ctx->service_name, allowed_src_addrs);
+                    host_ctx_free(h_ctx);
+                    return NULL;
+                }
             }
         }
             break;
         case SERVER_CFG_V1: {
-            const ziti_server_cfg_v1 *server_v1_cfg = cfg;
-            display_proto = server_v1_cfg->protocol;
-            host_ctx->forward_protocol = false;
-            host_ctx->proto_u.protocol = server_v1_cfg->protocol;
-
-            display_addr = server_v1_cfg->hostname;
-            host_ctx->forward_address = false;
-            host_ctx->addr_u.address = server_v1_cfg->hostname;
-
-            snprintf(display_port, sizeof(display_port), "%d", server_v1_cfg->port);
-            host_ctx->forward_port = false;
-            host_ctx->port_u.port = server_v1_cfg->port;
+            const ziti_server_cfg_v1 *server_v1_cfg = &zh_ctx->cfg.server_v1;
+            host_ctx_set_protocol(h_ctx, server_v1_cfg->protocol);
+            host_ctx_set_address(h_ctx, server_v1_cfg->hostname);
+            host_ctx_set_port(h_ctx, server_v1_cfg->port);
         }
             break;
         default:
-            ZITI_LOG(WARN, "unexpected cfg_type %d", cfg_type);
+            ZITI_LOG(WARN, "unexpected cfg_type %d", zh_ctx->cfg_type);
             break;
     }
 
-    snprintf(host_ctx->display_address, sizeof(host_ctx->display_address), "%s:%s:%s", display_proto, display_addr, display_port);
+    host_ctx_set_display_address(h_ctx);
     ziti_connection serv;
-    ziti_conn_init(ziti_ctx, &serv, host_ctx);
+    ziti_conn_init(zh_ctx->ztx, &serv, h_ctx);
 
     char listen_identity[128];
     if (listen_opts_p != NULL) {
         if (listen_opts_p->identity != NULL && listen_opts_p->identity[0] != '\0') {
-            const ziti_identity *zid = ziti_get_identity(ziti_ctx);
+            const ziti_identity *zid = ziti_get_identity(zh_ctx->ztx);
             strncpy(listen_identity, listen_opts_p->identity, sizeof(listen_identity));
             if (string_replace(listen_identity, sizeof(listen_identity), "$tunneler_id.name", zid->name) != NULL) {
                 listen_opts_p->identity = listen_identity;
             }
         }
     }
-    ziti_listen_with_options(serv, service_name, listen_opts_p, hosted_listen_cb, on_hosted_client_connect);
+    ziti_listen_with_options(serv, zh_ctx->service_name, listen_opts_p, hosted_listen_cb, on_hosted_client_connect);
 
-    return host_ctx;
+    return h_ctx;
+}
+
+// todo: pass connect status here (and ziti_close here)? alternative is to close ziti in close cb
+// todo: return accept status here? tsdk might close if this fails. alternative is to do this in close cb.
+
+/** called by tsdk when a connection to a hosted server is established (or fails) */
+bool ziti_sdk_c_accept(const void *zh_ctx, io_ctx_t *io) {
+    ziti_host_t *zh = zh_ctx;
+    ziti_io_context *ziti_io = io->ziti_io;
+
+    int r = ziti_accept(ziti_io->ziti_conn, on_hosted_client_connect_complete, on_ziti_data);
+    return r == ZITI_OK;
 }

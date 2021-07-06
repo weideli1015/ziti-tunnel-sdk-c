@@ -107,6 +107,26 @@ const char *get_client_address(const struct tunneler_io_ctx_s * tnlr_io) {
     return tnlr_io->client;
 }
 
+tunneler_io_context tunneler_io_new(tunneler_context tnlr_ctx, tunneler_proto_type proto, void *lwip_pcb) {
+    tunneler_io_context tnlr_io = calloc(1, sizeof(struct tunneler_io_ctx_s));
+    tnlr_io->tnlr_ctx = tnlr_ctx;
+    tnlr_io->proto = proto;
+    switch (proto) {
+        case tun_tcp:
+            tnlr_io->tcp = lwip_pcb;
+            break;
+        case tun_udp:
+            tnlr_io->udp.pcb = lwip_pcb;
+            tnlr_io->udp.queued = NULL;
+        default:
+            TNL_LOG(ERR, "unsupported protocol %d", proto);
+            free(tnlr_io);
+            return NULL;
+    }
+
+    return tnlr_io;
+}
+
 void free_tunneler_io_context(tunneler_io_context *tnlr_io_ctx_p) {
     if (tnlr_io_ctx_p == NULL) {
         return;
@@ -122,7 +142,7 @@ void free_tunneler_io_context(tunneler_io_context *tnlr_io_ctx_p) {
  * called by tunneler application when a service dial has completed
  * - let the client know that we have a connection (e.g. send SYN/ACK)
  */
-void ziti_tunneler_dial_completed(struct io_ctx_s *io, bool ok) {
+void ziti_tunneler_ziti_dial_completed(io_ctx_t *io, bool ok) {
     if (io == NULL) {
         TNL_LOG(ERR, "null io");
         return;
@@ -146,8 +166,341 @@ void ziti_tunneler_dial_completed(struct io_ctx_s *io, bool ok) {
     }
 }
 
-host_ctx_t *ziti_tunneler_host(tunneler_context tnlr_ctx, const void *ziti_ctx, const char *service_name, cfg_type_e cfg_type, void *config) {
-    return tnlr_ctx->opts.ziti_host((void *) ziti_ctx, tnlr_ctx->loop, service_name, cfg_type, config);
+host_ctx_t *host_ctx_new(tunneler_context tnlr_ctx, const char *app_id, void *app_host_ctx) {
+    host_ctx_t *hctx = calloc(1, sizeof(intercept_ctx_t));
+    hctx->tnlr_ctx = tnlr_ctx;
+    hctx->service_name = app_id;
+    hctx->app_host_ctx = app_host_ctx;
+    STAILQ_INIT(&hctx->proto_u.allowed_protocols);
+    STAILQ_INIT(&hctx->addr_u.allowed_addresses);
+    STAILQ_INIT(&hctx->port_u.allowed_port_ranges);
+
+    return hctx;
+}
+
+#define safe_free(p) if ((p) != NULL) free((p))
+
+#define STAILQ_CLEAR(slist_head, free_fn) do { \
+    while (!STAILQ_EMPTY(slist_head)) { \
+        void *elem = STAILQ_FIRST(slist_head); \
+        STAILQ_REMOVE_HEAD((slist_head), entries); \
+        free_fn(elem); \
+    } \
+} while(0);
+
+void host_ctx_free(host_ctx_t *h_ctx) {
+    if (h_ctx == NULL) {
+        return;
+    }
+
+    if (h_ctx->forward_protocol) {
+        STAILQ_CLEAR(&h_ctx->proto_u.allowed_protocols, safe_free);
+    }
+
+    if (h_ctx->forward_address) {
+        STAILQ_CLEAR(&h_ctx->addr_u.allowed_addresses, safe_free);
+    }
+
+    if (h_ctx->forward_port) {
+        STAILQ_CLEAR(&h_ctx->port_u.allowed_port_ranges, safe_free);
+    }
+
+    STAILQ_CLEAR(&h_ctx->allowed_source_addresses, safe_free);
+}
+
+void *get_app_host_ctx(host_ctx_t *h_ctx) {
+    return h_ctx->app_host_ctx;
+}
+
+void host_ctx_set_protocol(host_ctx_t *h_ctx, const char *protocol) {
+    h_ctx->forward_protocol = false;
+    h_ctx->proto_u.protocol = strdup(protocol);
+}
+
+void host_ctx_set_address(host_ctx_t *h_ctx, const char *address) {
+    h_ctx->forward_address = false;
+    h_ctx->addr_u.address = strdup(address);
+}
+
+void host_ctx_set_port(host_ctx_t *h_ctx, uint16_t port) {
+    h_ctx->forward_port = false;
+    h_ctx->port_u.port = port;
+}
+
+void host_ctx_add_allowed_protocol(host_ctx_t *h_ctx, const char *protocol) {
+    h_ctx->forward_protocol = true;
+    protocol_t *p = calloc(1, sizeof(protocol_t));
+    p->protocol = strdup(protocol);
+    STAILQ_INSERT_TAIL(&h_ctx->proto_u.allowed_protocols, p, entries);
+}
+
+const address_t *host_ctx_add_allowed_address(host_ctx_t *h_ctx, const char *address) {
+    address_t *a = parse_address(address, NULL);
+    if (a != NULL) {
+        STAILQ_INSERT_TAIL(&h_ctx->addr_u.allowed_addresses, a, entries);
+    }
+    return a;
+}
+
+void host_ctx_add_allowed_port_range(host_ctx_t *h_ctx, uint16_t low, uint16_t high) {
+    h_ctx->forward_port = true;
+    port_range_t *pr = parse_port_range(low, high);
+    STAILQ_INSERT_TAIL(&h_ctx->port_u.allowed_port_ranges, pr, entries);
+}
+
+const address_t *host_ctx_add_allowed_source_address(host_ctx_t *h_ctx, const char *address){
+    address_t *a = parse_address(address, NULL);
+    if (a == NULL) {
+        return NULL;
+    }
+    STAILQ_INSERT_TAIL(&h_ctx->allowed_source_addresses, a, entries);
+    return a;
+}
+
+void host_ctx_set_display_address(host_ctx_t *h_ctx) {
+    /* construct display address based on configuration */
+    char *display_proto = "?", *display_addr = "?", display_port[12] = { '?', '\0' };
+    if (!h_ctx->forward_protocol) {
+        display_proto = h_ctx->proto_u.protocol;
+    }
+    if (!h_ctx->forward_address) {
+        display_addr = h_ctx->addr_u.address;
+    }
+    if (!h_ctx->forward_port) {
+        snprintf(display_port, sizeof(display_port), "%d", h_ctx->port_u.port);
+    }
+
+    snprintf(h_ctx->display_address, sizeof(h_ctx->display_address), "%s:%s:%s", display_proto, display_addr, display_port);
+}
+
+const char *host_ctx_get_display_address(host_ctx_t *h_ctx) {
+    const char *s = h_ctx ? h_ctx->display_address : "<null host_ctx>";
+    return s;
+}
+
+tunneler_proto_type get_protocol_id(const char *protocol) {
+    if (strcasecmp(protocol, "tcp") == 0) {
+        return tun_tcp;
+    } else if (strcasecmp(protocol, "udp") == 0) {
+        return tun_udp;
+    }
+    return -1;
+}
+
+const char *get_protocol_str(tunneler_proto_type protocol_id) {
+    switch (protocol_id) {
+        case tun_tcp:
+            return "tcp";
+        case tun_udp:
+            return "udp";
+        default:
+            return "NUL";
+    }
+}
+
+/** determine server address for given service and client */
+static bool get_dial_address(const host_ctx_t *h_ctx, const hosted_client_info_t *client,
+                             tunneler_proto_type *proto, address_t *addr, u16_t *port) {
+    if (h_ctx->forward_protocol) {
+        if (client->dst_protocol == NULL || client->dst_protocol[0] == '\0') {
+            TNL_LOG(ERR,
+                    "hosted_service[%s] client[%s] config specifies 'forwardProtocol', but client did not send dst_protocol",
+                    h_ctx->service_name, client->identity);
+            return false;
+        }
+        if (!protocol_match(client->dst_protocol, &h_ctx->proto_u.allowed_protocols)) {
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] requested protocol '%s' is not allowed",
+                    h_ctx->service_name, client->identity, client->dst_protocol);
+            return false;
+        }
+        *proto = get_protocol_id(client->dst_protocol);
+    } else {
+        *proto = get_protocol_id(h_ctx->proto_u.protocol);
+    }
+
+    const char *dial_addr_str;
+    if (h_ctx->forward_address) {
+        if (client->dst_hostname != NULL && client->dst_hostname[0] != '\0') {
+            dial_addr_str = client->dst_hostname;
+        } else if (client->dst_ip != NULL && client->dst_ip[0] != '\0') {
+            dial_addr_str = client->dst_ip;
+        } else {
+            TNL_LOG(ERR,
+                    "hosted_service[%s] client[%s] config specifies 'forwardAddress' but client did not send dst_hostname or dst_ip",
+                    h_ctx->service_name, client->identity);
+        }
+    } else {
+        dial_addr_str = h_ctx->addr_u.address;
+    }
+
+    if (!parse_address_r(addr, dial_addr_str, h_ctx->tnlr_ctx->dns)) {
+        TNL_LOG(ERR, "hosted_service[%s] client[%s] failed to parse server address '%s'", h_ctx->service_name,
+                client->identity, dial_addr_str);
+        return false;
+    }
+
+    // ensure dialed address is allowed
+    if (h_ctx->forward_address) {
+        // todo match hostnames; pass address_t to address_match?
+        if (!address_match(&addr->ip, &h_ctx->addr_u.allowed_addresses)) {
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] requested address '%s' is not allowed",
+                    h_ctx->service_name, client->identity, dial_addr_str);
+            return false;
+        }
+    }
+
+    if (h_ctx->forward_port) {
+        if (client->dst_port != NULL || client->dst_port[0] != '\0') {
+            errno = 0;
+            *port = (u16_t) strtoul(client->dst_port, NULL, 10);
+            if (errno != 0) {
+                TNL_LOG(ERR, "hosted_service[%s] client[%s] failed to parse dst_port '%s'", h_ctx->service_name,
+                        client->identity, client->dst_port);
+                return false;
+            }
+        } else {
+            TNL_LOG(ERR,
+                    "hosted_service[%s] client[%s] config specifies 'forwardPort' but client did not send dst_port",
+                    h_ctx->service_name, client->identity);
+            return false;
+        }
+
+        if (!port_match(*port, &h_ctx->port_u.allowed_port_ranges)) {
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] requested port '%s' is not allowed",
+                    h_ctx->service_name, client->identity, client->dst_port);
+            return false;
+        }
+    } else {
+        *port = h_ctx->port_u.port;
+    }
+
+    return true;
+}
+
+static bool get_source_address(const host_ctx_t *h_ctx, const hosted_client_info_t *client,
+                               address_t *addr, u16_t *port) {
+    const char *source_addr = client->source_addr;
+    const char *port_sep = strchr(client->source_addr, ':');
+    if (port_sep != NULL) {
+        const char *port_str = port_sep + 1;
+        errno = 0;
+        *port = (u16_t) strtoul(port_str, NULL, 10);
+        if (errno != 0) {
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] could not parse port in source_addr '%s'",
+                    h_ctx->service_name, client->identity, client->source_addr);
+            return false;
+        }
+        source_addr = strndup(client->source_addr, port_sep - client->source_addr);
+    }
+
+    bool r = parse_address_r(addr, source_addr, h_ctx->tnlr_ctx->dns);
+    if (!r) {
+        TNL_LOG(ERR, "hosted_service[%s] client[%s] failed to parse source_addr '%s'",
+                h_ctx->service_name, client->identity, source_addr);
+    }
+
+    if (source_addr != client->source_addr) {
+        free((char *) source_addr);
+    }
+
+    return r;
+}
+
+void hosted_client_info_init(hosted_client_info_t *client,
+                             const char *identity,
+                             const char *dst_protocol, const char *dst_ip, const char *dst_port,
+                             const char *dst_hostname,
+                             const char *src_protocol, const char *src_ip, const char *src_port,
+                             const char *source_addr) {
+    client->identity = identity;
+    client->dst_protocol = dst_protocol;
+    client->dst_ip = dst_ip;
+    client->dst_port = dst_port;
+    client->dst_hostname = dst_hostname;
+    client->src_protocol = src_protocol;
+    client->src_ip = src_ip;
+    client->src_port = src_port;
+    client->source_addr = source_addr;
+}
+
+hosted_client_info_t *hosted_client_info_new(const char *identity,
+                                             const char *dst_protocol, const char *dst_ip, const char *dst_port,
+                                             const char *dst_hostname,
+                                             const char *src_protocol, const char *src_ip, const char *src_port,
+                                             const char *source_addr) {
+    hosted_client_info_t *client = malloc(sizeof(hosted_client_info_t));
+    hosted_client_info_init(client, identity,
+                            dst_protocol, dst_ip, dst_port, dst_hostname,
+                            src_protocol, src_ip, src_port, source_addr);
+    return client;
+}
+
+// todo packets to loopback addresses (with source IP set) are flagged as martian. can be overcome with:
+// - linux: sysctl net.ipv4.conf.tun0.route_localnet=1 if dst is 127/8
+// - macOS: ???
+// - windows: ??
+// allowing route_localnet is safe-ish, I think, because all packets that come out
+// of the tun were put there by the tsdk - e.g. not routed in from the LAN.
+
+tunneler_io_context ziti_tunneler_dial_host(host_ctx_t *h_ctx, hosted_client_info_t *client, io_ctx_t *io) {
+
+    tunneler_proto_type dst_proto;
+    address_t dst_addr;
+    u16_t dst_port;
+
+    if (!get_dial_address(h_ctx, client, &dst_proto, &dst_addr, &dst_port)) {
+        TNL_LOG(ERR, "hosted_service[%s] client[%s] failed to determine server address",
+                h_ctx->service_name, client->identity);
+        return NULL;
+    }
+
+    address_t src_addr;
+    ip_addr_t *src_ip_p = NULL;
+    u16_t src_port = 0;
+
+    if (client->source_addr != NULL) {
+        src_ip_p = &src_addr.ip;
+        if (!get_source_address(h_ctx, client, &src_addr, &src_port)) {
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] failed to get source_addr from '%s'",
+                    h_ctx->service_name, client->identity, client->source_addr);
+            return NULL;
+        }
+    }
+
+    io->tnlr_io = tunneler_io_new(h_ctx->tnlr_ctx, dst_proto, NULL);
+    switch (dst_proto) {
+        case tun_tcp:
+            io->tnlr_io->tcp = tunneler_tcp_dial_host(h_ctx, io, &dst_addr.ip, dst_port, src_ip_p, src_port);
+            break;
+        case tun_udp:
+            // todo
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] hosted udp connections are not yet supported",
+                    io->tnlr_io->service_name, io->tnlr_io->client);
+            break;
+        default:
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] invalid destination protocol %d",
+                    h_ctx->service_name, client->identity, dst_proto);
+            break;
+    }
+
+    return io->tnlr_io;
+}
+
+void ziti_tunneler_ziti_accept_completed(io_ctx_t *io, bool ok) {
+    switch (io->tnlr_io->proto) {
+        case tun_tcp:
+            tunneler_tcp_hosted_client_ready(io, ok);
+            break;
+        case tun_udp:
+            // todo
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] hosted udp connections are not yet supported",
+                    io->tnlr_io->service_name, io->tnlr_io->client);
+            break;
+        default:
+            TNL_LOG(ERR, "hosted_service[%s] client[%s] invalid destination protocol %d",
+                    io->tnlr_io->service_name, io->tnlr_io->client, io->tnlr_io->proto);
+            break;
+    }
 }
 
 static void send_dns_resp(uint8_t *resp, size_t resp_len, void *ctx) {
@@ -215,8 +568,18 @@ void intercept_ctx_add_protocol(intercept_ctx_t *ctx, const char *protocol) {
     STAILQ_INSERT_TAIL(&ctx->protocols, proto, entries);
 }
 
-address_t *parse_address(const char *hn_or_ip_or_cidr, dns_manager *dns) {
-    address_t *addr = calloc(1, sizeof(address_t));
+bool parse_address_r(address_t *addr, const char *hn_or_ip_or_cidr, dns_manager *dns) {
+    if (!addr) {
+        TNL_LOG(DEBUG, "null addr");
+        return false;
+    }
+    memset(addr, 0, sizeof(address_t));
+
+    if (!hn_or_ip_or_cidr || hn_or_ip_or_cidr[0] == '\0') {
+        TNL_LOG(DEBUG, "null hn_or_ip_or_cidr");
+        return false;
+    }
+
     strncpy(addr->str, hn_or_ip_or_cidr, sizeof(addr->str));
     addr->is_hostname = false;
     char *prefix_sep = strchr(addr->str, '/');
@@ -232,14 +595,12 @@ address_t *parse_address(const char *hn_or_ip_or_cidr, dns_manager *dns) {
             const char *resolved_ip_str = assign_ip(addr->str);
             if (dns->apply(dns, addr->str, resolved_ip_str) != 0) {
                 TNL_LOG(ERR, "failed to apply DNS mapping %s => %s", addr->str, resolved_ip_str);
-                free(addr);
-                return NULL;
+                return false;
             } else {
                 TNL_LOG(DEBUG, "intercept hostname %s is not an ip", addr->str);
                 if (ipaddr_aton(resolved_ip_str, &addr->ip) == 0) {
                     TNL_LOG(ERR, "dns manager provided unparsable ip address '%s'", resolved_ip_str);
-                    free(addr);
-                    return NULL;
+                    return false;
                 } else {
                     addr->is_hostname = true;
                 }
@@ -264,6 +625,15 @@ address_t *parse_address(const char *hn_or_ip_or_cidr, dns_manager *dns) {
         addr->prefix_len = addr_bits;
     }
 
+    return true;
+}
+
+address_t *parse_address(const char *hn_or_ip_or_cidr, dns_manager *dns) {
+    address_t *addr = calloc(1, sizeof(address_t));
+    if (!parse_address_r(addr, hn_or_ip_or_cidr, dns)) {
+        free(addr);
+        return NULL;
+    }
     return addr;
 }
 
@@ -410,6 +780,10 @@ void ziti_tunneler_stop_intercepting(tunneler_context tnlr_ctx, void *zi_ctx) {
 
 }
 
+void ziti_tunneler_stop_hosting(tunneler_context tnlr_ctx, void *zh_ctx) {
+    // todo
+}
+
 /** called by tunneler application when data is read from a ziti connection */
 ssize_t ziti_tunneler_write(tunneler_io_context tnlr_io_ctx, const void *data, size_t len) {
     if (tnlr_io_ctx == NULL) {
@@ -518,7 +892,7 @@ static struct raw_pcb * init_protocol_handler(u8_t proto, raw_recv_fn recv_fn, v
 static void run_packet_loop(uv_loop_t *loop, tunneler_context tnlr_ctx) {
     tunneler_sdk_options opts = tnlr_ctx->opts;
     if (opts.ziti_close == NULL || opts.ziti_close_write == NULL ||  opts.ziti_write == NULL ||
-        opts.ziti_dial == NULL || opts.ziti_host == NULL) {
+        opts.ziti_dial == NULL || opts.ziti_accept == NULL) {
         TNL_LOG(ERR, "ziti_sdk_* callback options cannot be null");
         exit(1);
     }
