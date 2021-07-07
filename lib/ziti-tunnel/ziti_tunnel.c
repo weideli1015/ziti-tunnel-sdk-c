@@ -167,13 +167,14 @@ void ziti_tunneler_ziti_dial_completed(io_ctx_t *io, bool ok) {
 }
 
 host_ctx_t *host_ctx_new(tunneler_context tnlr_ctx, const char *app_id, void *app_host_ctx) {
-    host_ctx_t *hctx = calloc(1, sizeof(intercept_ctx_t));
+    host_ctx_t *hctx = calloc(1, sizeof(host_ctx_t));
     hctx->tnlr_ctx = tnlr_ctx;
     hctx->service_name = app_id;
     hctx->app_host_ctx = app_host_ctx;
     STAILQ_INIT(&hctx->proto_u.allowed_protocols);
     STAILQ_INIT(&hctx->addr_u.allowed_addresses);
     STAILQ_INIT(&hctx->port_u.allowed_port_ranges);
+    STAILQ_INIT(&hctx->allowed_source_addresses);
 
     return hctx;
 }
