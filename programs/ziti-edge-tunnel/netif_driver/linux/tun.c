@@ -225,6 +225,7 @@ netif_driver tun_open(uv_loop_t *loop, uint32_t tun_ip, uint32_t dns_ip, const c
         return NULL;
     }
 
+    driver->ip4          = tun_ip;
     driver->handle       = tun;
     driver->read         = tun_read;
     driver->write        = tun_write;

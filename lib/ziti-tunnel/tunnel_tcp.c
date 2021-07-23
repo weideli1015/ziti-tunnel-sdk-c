@@ -155,6 +155,7 @@ static void on_tcp_client_err(void *io_ctx, err_t err) {
         TNL_LOG(ERR, "client=%s err=%d, terminating connection", client, err);
         // null our pcb so tunneler_tcp_close doesn't try to close it.
         io->tnlr_io->tcp = NULL;
+        // todo got here with opts nulled out
         io->tnlr_io->tnlr_ctx->opts.ziti_close(io->ziti_io);
     }
 }
@@ -279,6 +280,10 @@ typedef struct {
 static err_t tunneler_tcp_hosted_dial_complete(void *pending_ctx, struct tcp_pcb *pcb, err_t err) {
     pending_conn_ctx *ctx = pending_ctx;
     void *zh_ctx = get_app_host_ctx(ctx->h_ctx);
+    TNL_LOG(DEBUG, "hosted_service[%s] client[%s] tcp_connect(%s) status=%d",
+            ctx->h_ctx->service_name, ctx->io->tnlr_io->client,
+            ipaddr_ntoa(&ctx->io->tnlr_io->tcp->remote_ip), ctx->io->tnlr_io->tcp->remote_port,
+            err);
     ctx->io->tnlr_io->tnlr_ctx->opts.ziti_accept(zh_ctx, ctx->io);
 
     // set callback argument to the io context now that we no longer need the host context.
@@ -294,9 +299,9 @@ static err_t tunneler_tcp_hosted_dial_complete(void *pending_ctx, struct tcp_pcb
 
 /** mark a connection as ready for data. called by ziti sdk accept_cb */
 void tunneler_tcp_hosted_client_ready(io_ctx_t *io, bool ok) {
+    TNL_LOG(DEBUG, "hosted_service[%s] client[%s] client %s accepted",
+            io->tnlr_io->service_name, io->tnlr_io->client, ok ? "was" : "was not");
     if (!ok) {
-        TNL_LOG(DEBUG, "hosted_service[%s] client[%s] client was not accepted. aborting server connection",
-                io->tnlr_io->service_name, io->tnlr_io->client);
         tcp_abort(io->tnlr_io->tcp);
         return;
     }
@@ -318,15 +323,19 @@ struct tcp_pcb *tunneler_tcp_dial_host(host_ctx_t *h_ctx, io_ctx_t *io,
     tcp_arg(io->tnlr_io->tcp, pending_ctx);
     tcp_err(io->tnlr_io->tcp, on_tcp_client_err);
     err_t err;
-    if (src_ip) {
-        if ((err = tcp_bind(io->tnlr_io->tcp, src_ip, src_port)) != ERR_OK) {
-            TNL_LOG(ERR, "hosted_service[%s] client[%s] tcp_bind(%s:%d) failed: err=%d",
-                    h_ctx->service_name, io->tnlr_io->client,
-                    ipaddr_ntoa(src_ip), src_port, err);
-            tcp_free(io->tnlr_io->tcp);
-            return NULL;
-        }
+    if (!src_ip) {
+        src_ip = &io->tnlr_io->tnlr_ctx->netif.ip_addr;
     }
+    if ((err = tcp_bind(io->tnlr_io->tcp, src_ip, src_port)) != ERR_OK) {
+        TNL_LOG(ERR, "hosted_service[%s] client[%s] tcp_bind(%s:%d) failed: err=%d",
+                h_ctx->service_name, io->tnlr_io->client,
+                ipaddr_ntoa(src_ip), src_port, err);
+        tcp_free(io->tnlr_io->tcp);
+        return NULL;
+    }
+    tcp_bind_netif(io->tnlr_io->tcp, &io->tnlr_io->tnlr_ctx->netif);
+    TNL_LOG(DEBUG, "hosted_service[%s] client[%s] tcp_connect(%s:%d)", h_ctx->service_name,
+            io->tnlr_io->client, ipaddr_ntoa(dst_ip), dst_port);
     err = tcp_connect(io->tnlr_io->tcp, dst_ip, dst_port, tunneler_tcp_hosted_dial_complete);
     if (err != ERR_OK) {
         TNL_LOG(ERR, "hosted_service[%s] client[%s] tcp_connect to %s:%d failed: %s",
@@ -409,11 +418,6 @@ u8_t recv_tcp(void *tnlr_ctx_arg, struct raw_pcb *pcb, struct pbuf *p, const ip_
             }
             LWIP_ASSERT("tcp_input: pcb->next != pcb (after cache)", tpcb->next != tpcb);
             return 0;
-        }
-        // prevent lwip from acking the peer's syn/ack if the src/dst matches a pending connection.
-        if (tpcb->state == SYN_SENT && flags & (TCP_SYN|TCP_ACK)) {
-            // todo loop through pending connections
-            goto done;
         }
         prev = tpcb;
     }

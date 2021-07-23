@@ -100,7 +100,7 @@ int utun_delete_route(netif_handle tun, const char *dest) {
  * @param num populated with the unit number of the utun device that was opened
  * @return file descriptor to opened utun
  */
-netif_driver utun_open(char *error, size_t error_len, const char *cidr) {
+netif_driver utun_open(char *error, size_t error_len, uint32_t tun_ip, const char *dns_ip_range) {
     if (error != NULL) {
         memset(error, 0, error_len * sizeof(char));
     }
@@ -185,6 +185,7 @@ netif_driver utun_open(char *error, size_t error_len, const char *cidr) {
         return NULL;
     }
 
+    driver->ip4          = tun_ip;
     driver->handle       = tun;
     driver->read         = utun_read;
     driver->write        = utun_write;
@@ -193,22 +194,18 @@ netif_driver utun_open(char *error, size_t error_len, const char *cidr) {
     driver->delete_route = utun_delete_route;
     driver->close        = utun_close;
 
-    if (cidr) {
-        char cmd[1024];
-        int ip_len = (int)strlen(cidr);
-        const char *prefix_sep = strchr(cidr, '/');
-        if (prefix_sep != NULL) {
-            ip_len = (int)(prefix_sep - cidr);
-        }
-        // add address to interface. darwin utun devices may only have "point to point" addresses
-        snprintf(cmd, sizeof(cmd), "ifconfig %s %.*s %.*s", tun->name, ip_len, cidr, ip_len, cidr);
-        system(cmd);
+    char cmd[1024];
+    char ip4_str[16];
+    struct in_addr ip4 = { .s_addr = tun_ip };
+    snprintf(ip4_str, sizeof(ip4_str), "%s", inet_ntoa(ip4));
+    // add address to interface. darwin utun devices may only have "point to point" addresses
+    snprintf(cmd, sizeof(cmd), "ifconfig %s %s %s", tun->name, ip4_str, ip4_str);
+    system(cmd);
 
+    if (dns_ip_range) {
         // add a route for the subnet if one was specified
-        if (prefix_sep != NULL) {
-            snprintf(cmd, sizeof(cmd), "route add -net %s -interface %s", cidr, tun->name);
-            system(cmd);
-        }
+        snprintf(cmd, sizeof(cmd), "route add -net %s -interface %s", dns_ip_range, tun->name);
+        system(cmd);
     }
     return driver;
 }

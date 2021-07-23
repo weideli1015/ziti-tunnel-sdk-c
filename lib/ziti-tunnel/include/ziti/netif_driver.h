@@ -19,6 +19,7 @@ typedef int (*add_route_cb)(netif_handle dev, const char *dest);
 typedef int (*delete_route_cb)(netif_handle dev, const char *dest);
 
 typedef struct netif_driver_s {
+    uint32_t ip4;
     netif_handle handle;
     netif_read_cb read;
     netif_write_cb write;

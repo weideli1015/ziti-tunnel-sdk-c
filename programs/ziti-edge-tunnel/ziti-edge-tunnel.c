@@ -187,7 +187,7 @@ static int run_tunnel(uv_loop_t *ziti_loop, uint32_t tun_ip, const char *ip_rang
     netif_driver tun;
     char tun_error[64];
 #if __APPLE__ && __MACH__
-    tun = utun_open(tun_error, sizeof(tun_error), ip_range);
+    tun = utun_open(tun_error, sizeof(tun_error), tun_ip, ip_range);
 #elif __linux__
     tun = tun_open(ziti_loop, tun_ip, dns->dns_ip, ip_range, tun_error, sizeof(tun_error));
 #elif _WIN32

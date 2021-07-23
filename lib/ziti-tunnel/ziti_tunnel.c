@@ -36,15 +36,6 @@ limitations under the License.
 
 #include <string.h>
 
-const char *DST_PROTO_KEY = "dst_protocol";
-const char *DST_IP_KEY = "dst_ip";
-const char *DST_PORT_KEY = "dst_port";
-const char *DST_HOST_KEY = "dst_hostname";
-const char *SRC_PROTO_KEY = "src_protocol";
-const char *SRC_IP_KEY = "src_ip";
-const char *SRC_PORT_KEY = "src_port";
-const char *SOURCE_IP_KEY = "source_ip";
-
 struct resolve_req {
     ip_addr_t addr;
     u16_t port;
@@ -272,6 +263,11 @@ void host_ctx_set_display_address(host_ctx_t *h_ctx) {
     }
 
     snprintf(h_ctx->display_address, sizeof(h_ctx->display_address), "%s:%s:%s", display_proto, display_addr, display_port);
+
+    address_t *allowed_addr;
+    STAILQ_FOREACH(allowed_addr, &h_ctx->allowed_source_addresses, entries) {
+        h_ctx->tnlr_ctx->opts.netif_driver->add_route(h_ctx->tnlr_ctx->opts.netif_driver->handle, allowed_addr->str);
+    }
 }
 
 const char *host_ctx_get_display_address(host_ctx_t *h_ctx) {
@@ -910,7 +906,16 @@ static void run_packet_loop(uv_loop_t *loop, tunneler_context tnlr_ctx) {
         TNL_LOG(ERR, "netif_add failed");
         exit(1);
     }
+    ip4_addr_t ip4;
+    ip4_addr_set_u32(&ip4, netif_driver->ip4);
+    netif_set_ipaddr(&tnlr_ctx->netif, &ip4);
 
+    // todo ip forwarding needs to be enabled when connecting with lwip because
+    //  the tun is emitting packets for connections that were not initiated
+    //  via the system network stack.
+    // todo we tried using lwip instead of libuv to avoid the system's requirement
+    //  that source IPs must match a /32 address on a network interface. We can rely on
+    //  routing for successful return path when using lwip
     netif_set_default(&tnlr_ctx->netif);
     netif_set_link_up(&tnlr_ctx->netif);
     netif_set_up(&tnlr_ctx->netif);

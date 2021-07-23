@@ -109,6 +109,7 @@ static void on_hosted_client_connect(ziti_connection serv, ziti_connection clt, 
     ziti_io_context *ziti_io = calloc(1, sizeof(ziti_io_context));
     io->ziti_ctx = zh;
     io->ziti_io = ziti_io;
+    io->service.host_ctx = h_ctx;
     ziti_io->ziti_conn = clt;
     ziti_conn_set_data(clt, io);
 
