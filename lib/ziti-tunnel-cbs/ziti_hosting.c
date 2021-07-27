@@ -590,6 +590,8 @@ static void on_hosted_client_connect(ziti_connection serv, ziti_connection clt, 
             ZITI_LOG(DEBUG, "hosted_service[%s], client[%s]: getaddrinfo(%s,%s) returned multiple results; using first",
                      service_ctx->service_name, client_identity, source_addr, source_port);
         }
+        // todo add source ip to tun interface so bind will succeed.
+        // ziti_tunneler_add_address(tnlr_ctx, source_ai->ai_addr);
     }
 
     io_ctx = calloc(1, sizeof(struct hosted_io_ctx_s));

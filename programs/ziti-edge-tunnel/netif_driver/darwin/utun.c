@@ -95,6 +95,20 @@ int utun_delete_route(netif_handle tun, const char *dest) {
     return s;
 }
 
+int utun_add_address(netif_handle tun, const char *addr) {
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "ifconfig %s alias %s %s", tun->name, addr, addr);
+    int s = system(cmd);
+    return s;
+}
+
+int utun_delete_address(netif_handle tun, const char *addr) {
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "ifconfig %s -alias %s", tun->name, addr);
+    int s = system(cmd);
+    return s;
+}
+
 /**
  * open a utun device
  * @param num populated with the unit number of the utun device that was opened
