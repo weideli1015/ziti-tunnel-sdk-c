@@ -153,7 +153,6 @@ static struct rawsock_forwarder *create_rawsock_forwarder(tunneler_context tnlr,
         close_socket(sock);
         return NULL;
     }
-
     struct rawsock_forwarder *fwd = calloc(1, sizeof(struct rawsock_forwarder));
     if (fwd == NULL) {
         TNL_LOG(ERR, "failed to allocate rawsock_forwarder for %s", local_addr->str);
@@ -239,7 +238,11 @@ int ziti_tunneler_add_local_address(tunneler_context tnlr_ctx, const char *addr)
     /* the tunneler may need to intercept this ip, but packets to it won't be dispatched to the tun
      * device because the ip is now a local address (which is necessary for spoofing).
      * create raw sockets to sniff packets to this ip */
-    create_rawsock_forwarders(tnlr_ctx, addr);
+    s = create_rawsock_forwarders(tnlr_ctx, addr);
+    if (s < 0) {
+        TNL_LOG(ERR, "failed to create raw socket forwarders for intercepting spoofed ip %s", addr);
+        return -1;
+    }
 
     entry = calloc(1, sizeof(struct client_ip_entry_s));
     strncpy(entry->ip, addr, sizeof(entry->ip));
