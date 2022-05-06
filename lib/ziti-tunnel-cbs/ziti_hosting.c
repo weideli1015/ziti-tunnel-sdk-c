@@ -160,6 +160,7 @@ static void hosted_server_shutdown(struct hosted_io_ctx_s *io_ctx) {
 /* called by ziti sdk when a client of a hosted service sends data */
 static ssize_t on_hosted_client_data(ziti_connection clt, uint8_t *data, ssize_t len) {
     struct hosted_io_ctx_s *io_ctx = ziti_conn_data(clt);
+    ZITI_LOG(DEBUG, "len %zd", len);
     if (io_ctx == NULL) {
         ZITI_LOG(DEBUG, "null io");
         if (len > 0) {
