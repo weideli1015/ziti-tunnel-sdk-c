@@ -36,6 +36,7 @@ jobs:
             toolchain: Linux-arm.cmake
             cmake_opts: -DCMAKE_BUILD_TYPE=Release
             arch: arm
+            no_tests: true
 
           - os: ubuntu-latest
             container: ubuntu:18.04
@@ -44,6 +45,7 @@ jobs:
             toolchain: Linux-arm64.cmake
             cmake_opts: -DCMAKE_BUILD_TYPE=Release
             arch: arm64
+            no_tests: 'true'
 
     steps:
       - name: checkout workspace
@@ -67,6 +69,11 @@ jobs:
 
       - name: build ziti-edge-tunnel bundle target
         run: cmake --build ${{github.workspace}}/build --target bundle --verbose
+
+      - name: test
+        if: matrix.spec.no_tests != 'true'
+        working-directory: ${{runner.workspace}}/build
+        run: ctest -VV --no-compress-output -R all_tests
 
       - name: list bundle artifacts
         run: ls -R
