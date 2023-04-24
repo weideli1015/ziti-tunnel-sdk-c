@@ -9,7 +9,8 @@
     "getopt",
     {
       "name": "openssl",
-      "$comment": "on linux we use system installed OpenSSL (add platform = !linux once we figure out how)"
+      "platform": "!linux",
+      "$comment": "on linux we link dynamically to system installed OpenSSL (note: libssl-dev has be installed for build"
     }
   ],
   "features": {
