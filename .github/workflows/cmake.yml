@@ -4,9 +4,6 @@ on:
   push:
     branches: [ '**' ]
 
-  pull_request:
-    branches: [ main ]
-
   workflow_call:
 
 jobs:
@@ -57,11 +54,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run CMake
+      - name: Run CMake for Linux
+        if: ${{ matrix.container != null }}
         run: |
           ./cmake.sh \
             -p "ci-${{ matrix.preset }}" \
             -t bundle
+
+      - name: Run CMake for non-Linux platforms
+        if: ${{ matrix.container == null }}
+        uses: ./.github/actions/build
+        with:
+          preset: ${{ matrix.preset }}
+          target: bundle
 
       - name: list bundle artifacts
         run: ls -R

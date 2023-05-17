@@ -4,8 +4,8 @@
 .vs
 gcc
 
-build-*/
-build/
+/build-*/
+/build/
 /cmake-build-*/
 install/
 
