@@ -4,7 +4,15 @@ on:
   push:
     branches: [ '**' ]
 
+  pull_request:
+    branches: [ main ]
+
   workflow_call:
+
+# cancel older, redundant runs of same workflow on same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -34,17 +42,17 @@ jobs:
             preset: windows-arm64
 
           - os: ubuntu-20.04
-            container: openziti/ziti-cmake:kentest
+            container: openziti/ziti-cmake
             name: Linux x86_64
             preset: linux-x64
 
           - os: ubuntu-20.04
-            container: openziti/ziti-cmake:kentest
+            container: openziti/ziti-cmake
             name: Linux arm
             preset: linux-arm
 
           - os: ubuntu-20.04
-            container: openziti/ziti-cmake:kentest
+            container: openziti/ziti-cmake
             name: Linux arm64
             preset: linux-arm64
 

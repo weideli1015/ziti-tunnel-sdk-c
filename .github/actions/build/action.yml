@@ -37,7 +37,7 @@ runs:
       name: Configure CMake
       with:
         configurePreset: ci-${{ inputs.preset }}
-        configurePresetAdditionalArgs: "[ `-B`, `./build`, ${{ inputs.cmake_opts }} ]"
+        configurePresetAdditionalArgs: "[ `-B`, `./build` ]"
 
     - name: build ziti-edge-tunnel
       shell: bash
