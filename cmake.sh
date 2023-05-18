@@ -15,9 +15,9 @@ BASEDIR="$(cd "$(dirname "${0}")" && pwd)"
     echo -e "\nUsage: ${BASENAME} [CMD] [ARGS...]"\
             "\n\nRuns CMD in the ziti-cmake container, and builds the"\
             "\ndefault target if no CMD is specified\n"\
-            "\n    -c  CMAKE_CONFIG  set CMAKE_BUILD_TYPE (default: Release)"\
-            "\n    -p  CMAKE_PRESET  set CMAKE_TOOLCHAIN_FILE preset (default: ci-linux-x64)"\
-            "\n    -t  CMAKE_TARGET  set CMAKE_TARGET (default: bundle)"
+            "\n    -c  [Release|Debug]  set CMAKE_BUILD_TYPE (default: Release)"\
+            "\n    -p  CMAKE_PRESET     set CMAKE_TOOLCHAIN_FILE preset (default: ci-linux-x64)"\
+            "\n    -t  [bundle|package] set CMAKE_TARGET (default: bundle)"
     exit 0
 }
 
@@ -116,7 +116,7 @@ function main() {
             -B ./build
         cmake \
             --build ./build \
-            --config "Release" \
+            --config "${CMAKE_CONFIG:-Release}" \
             --target "${CMAKE_TARGET:-bundle}" \
             --verbose
     fi
