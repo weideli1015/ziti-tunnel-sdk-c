@@ -61,6 +61,7 @@ function set_workspace(){
             --rm \
             --user "${UID}" \
             --volume "${BASEDIR}:${WORKDIR}" \
+            --platform "linux/amd64" \
             openziti/ziti-cmake \
                 "${WORKDIR}/${BASENAME}" "${@}"
     fi
