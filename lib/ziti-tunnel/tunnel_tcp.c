@@ -226,6 +226,11 @@ int tunneler_tcp_close_write(struct tcp_pcb *pcb) {
         return 0;
     }
     LOG_STATE(DEBUG, "closing write", pcb);
+    if (pcb->state < ESTABLISHED) {
+        TNL_LOG(DEBUG, "closing connection before handshake complete. sending RST to client");
+        tcp_abandon(pcb, 1);
+        return -1;
+    }
     err_t err = tcp_shutdown(pcb, 0, 1);
     if (err != ERR_OK) {
         LOG_STATE(ERR, "tcp_shutdown failed: err=%d", pcb, err);
@@ -267,6 +272,7 @@ void tunneler_tcp_dial_completed(struct io_ctx_s *io, bool ok) {
         return;
     }
 
+    TNL_LOG(DEBUG, "ok[%d] client[%s] service[%s]", ok, io->tnlr_io->client, io->tnlr_io->service_name);
     struct tcp_pcb *pcb = io->tnlr_io->tcp;
     tcp_arg(pcb, io);
     if (!ok) {
