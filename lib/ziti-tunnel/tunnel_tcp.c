@@ -53,7 +53,7 @@ static const char* tcp_state_str(int st) {
     return tcp_labels[st];
 }
 
-/** called by lwip when a client sends a SYN segment to an intercepted address.
+/** called by lwip when a client sends the final ACK of the 3-way handshake for connection to an intercepted address.
  * this only exists to appease lwip */
 static err_t on_accept(void *arg, struct tcp_pcb *pcb, err_t err) {
     TNL_LOG(DEBUG, "on_accept: %d", err);
@@ -191,6 +191,11 @@ ssize_t tunneler_tcp_write(struct tcp_pcb *pcb, const void *data, size_t len) {
         return -1;
     }
 
+    if (pcb->state < ESTABLISHED) {
+        TNL_LOG(DEBUG, "pcb[%p] not yet established. retaining %ld bytes", pcb, len);
+        return 0; // ziti sdk will hold the data
+    }
+
     int qlen = tcp_sndqueuelen(pcb);
     if (qlen > TCP_SND_QUEUELEN) {
         TNL_LOG(WARN, "sndqueuelen limit reached (%d > %d)", qlen, TCP_SND_QUEUELEN);
@@ -226,9 +231,13 @@ int tunneler_tcp_close_write(struct tcp_pcb *pcb) {
         return 0;
     }
     LOG_STATE(DEBUG, "closing write", pcb);
+    io_ctx_t *io = pcb->callback_arg;
     if (pcb->state < ESTABLISHED) {
         TNL_LOG(DEBUG, "closing connection before handshake complete. sending RST to client");
         tcp_abandon(pcb, 1);
+        // make sure the ziti connection is closed. null the PCB first to prevent ziti_close callback from (double) closing
+        io->tnlr_io->tcp = NULL;
+        io->close_fn(io->ziti_io);
         return -1;
     }
     err_t err = tcp_shutdown(pcb, 0, 1);
@@ -250,11 +259,15 @@ int tunneler_tcp_close(struct tcp_pcb *pcb) {
     if (pcb->state == CLOSED) {
         return 0;
     }
+    io_ctx_t *io = pcb->callback_arg;
     tcp_arg(pcb, NULL);
     tcp_recv(pcb, NULL);
     if (pcb->state < ESTABLISHED) {
         TNL_LOG(DEBUG, "closing connection before handshake complete. sending RST to client");
         tcp_abandon(pcb, 1);
+        // make sure the ziti connection is closed. null the PCB first to prevent ziti_close callback from (double) closing
+        io->tnlr_io->tcp = NULL;
+        io->close_fn(io->ziti_io);
         return -1;
     }
     err_t err = tcp_close(pcb);
