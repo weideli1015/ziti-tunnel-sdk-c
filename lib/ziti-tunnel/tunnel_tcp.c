@@ -54,9 +54,14 @@ static const char* tcp_state_str(int st) {
 }
 
 /** called by lwip when a client sends the final ACK of the 3-way handshake for connection to an intercepted address.
- * this only exists to appease lwip */
+ * this only exists to appease lwip. err is always ERR_OK. */
 static err_t on_accept(void *arg, struct tcp_pcb *pcb, err_t err) {
-    TNL_LOG(DEBUG, "on_accept: %d", err);
+    if (arg == NULL) {
+        TNL_LOG(DEBUG, "pcb[%p] err[%d]", pcb, err);
+    } else {
+        io_ctx_t *io = arg;
+        TNL_LOG(DEBUG, "client[%s] service[%s] err[%d]", io->tnlr_io->client, io->tnlr_io->service_name, err);
+    }
     return ERR_OK;
 }
 
@@ -168,7 +173,7 @@ static err_t on_tcp_client_data(void *io_ctx, struct tcp_pcb *pcb, struct pbuf *
 /** called by lwip when an error has occurred on a tcp connection.
  * the corresponding pcb is not valid by the time this fn is called. */
 static void on_tcp_client_err(void *io_ctx, err_t err) {
-    struct io_ctx_s *io = io_ctx;
+    io_ctx_t *io = io_ctx;
     // we initiated close and cleared arg err should be ERR_ABRT
     if (io_ctx == NULL) {
         TNL_LOG(TRACE, "client pcb(<unknown>) finished err=%d", err);
@@ -179,7 +184,7 @@ static void on_tcp_client_err(void *io_ctx, err_t err) {
             client = io->tnlr_io->client;
         }
         TNL_LOG(ERR, "client=%s err=%d, terminating connection", client, err);
-        // null our pcb so tunneler_tcp_close doesn't try to close it.
+        // make sure the ziti connection is closed. null the PCB first to prevent ziti_close callback from (double) closing
         io->tnlr_io->tcp = NULL;
         io->close_fn(io->ziti_io);
     }
@@ -234,10 +239,7 @@ int tunneler_tcp_close_write(struct tcp_pcb *pcb) {
     io_ctx_t *io = pcb->callback_arg;
     if (pcb->state < ESTABLISHED) {
         TNL_LOG(DEBUG, "closing connection before handshake complete. sending RST to client");
-        tcp_abandon(pcb, 1);
-        // make sure the ziti connection is closed. null the PCB first to prevent ziti_close callback from (double) closing
-        io->tnlr_io->tcp = NULL;
-        io->close_fn(io->ziti_io);
+        tcp_abandon(pcb, 1); // lwip will call on_tcp_client_err
         return -1;
     }
     err_t err = tcp_shutdown(pcb, 0, 1);
@@ -259,15 +261,10 @@ int tunneler_tcp_close(struct tcp_pcb *pcb) {
     if (pcb->state == CLOSED) {
         return 0;
     }
-    io_ctx_t *io = pcb->callback_arg;
-    tcp_arg(pcb, NULL);
     tcp_recv(pcb, NULL);
     if (pcb->state < ESTABLISHED) {
         TNL_LOG(DEBUG, "closing connection before handshake complete. sending RST to client");
-        tcp_abandon(pcb, 1);
-        // make sure the ziti connection is closed. null the PCB first to prevent ziti_close callback from (double) closing
-        io->tnlr_io->tcp = NULL;
-        io->close_fn(io->ziti_io);
+        tcp_abandon(pcb, 1); // lwip will call on_tcp_client_err
         return -1;
     }
     err_t err = tcp_close(pcb);
