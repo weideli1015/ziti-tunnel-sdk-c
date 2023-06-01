@@ -261,19 +261,27 @@ int tunneler_tcp_close(struct tcp_pcb *pcb) {
     if (pcb->state == CLOSED) {
         return 0;
     }
-    tcp_recv(pcb, NULL);
+    int r = 0;
     if (pcb->state < ESTABLISHED) {
         TNL_LOG(DEBUG, "closing connection before handshake complete. sending RST to client");
-        tcp_abandon(pcb, 1); // lwip will call on_tcp_client_err
-        return -1;
+        tcp_abandon(pcb, 1); // lwip will call on_tcp_client_err, which is why `tcp_arg` is spared at this point
+        r = -1;
+        goto done;
     }
+
     err_t err = tcp_close(pcb);
     if (err != ERR_OK) {
         LOG_STATE(ERR, "tcp_close failed; err=%d", pcb, err);
-        return -1;
+        r = -1;
+        goto done;
     }
+
+    done:
+    tcp_arg(pcb,NULL);
+    tcp_recv(pcb, NULL);
     LOG_STATE(DEBUG, "closed", pcb);
-    return 0;
+
+    return r;
 }
 
 void tunneler_tcp_dial_completed(struct io_ctx_s *io, bool ok) {
