@@ -147,18 +147,18 @@ threads your CPU has. You may also want to add that to your preset using the
 
 ## Docker Crossbuilder Image
 
-The CI job which also runs the included `cmake.sh` builds this project inside a Docker container. The script will run the necessary container image if needed. The container image has the tools to cross-compile for target architectures arm, arm64. This script works for Linux, macOS, and WSL2 on Windows. Arm architecture hosts will experience slower build times due to emulation of this x86_64 container image.
+The CI job which also runs the included `ziti-builder.sh` builds this project inside a Docker container. The script will run the necessary container image if needed. The container image has the tools to cross-compile for target architectures arm, arm64. This script works for Linux, macOS, and WSL2 on Windows. Arm architecture hosts will experience slower build times due to emulation of this x86_64 container image.
 
-Without any arguments, the `cmake.sh` script will build the `bundle` target with the `ci-linux-x64` (amd64) preset, placing the resulting ZIP archive in `./build/bundle`.
+Without any arguments, the `ziti-builder.sh` script will build the `bundle` target with the `ci-linux-x64` (amd64) preset, placing the resulting ZIP archive in `./build/bundle`.
 
 ```bash
-./cmake.sh
+./ziti-builder.sh
 ```
 
 To build for a specific target architecture, use the `-p` argument to specify the vcpkg preset.
 
 ```bash
-./cmake.sh -p ci-linux-arm64
+./ziti-builder.sh -p ci-linux-arm64
 ```
 
 ```bash

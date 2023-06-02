@@ -7,6 +7,8 @@ gcc
 /build-*/
 /build/
 /cmake-build-*/
+# created by following build instructions to download the CMake installer script in current dir
+/cmake.sh
 install/
 
 .vscode/
