@@ -135,7 +135,9 @@ static err_t on_tcp_client_data(void *io_ctx, struct tcp_pcb *pcb, struct pbuf *
     struct io_ctx_s *io = (struct io_ctx_s *)io_ctx;
 
     if (err == ERR_OK && p == NULL) {
-        TNL_LOG(DEBUG, "client sent FIN: client=%s, service=%s", io->tnlr_io->client, io->tnlr_io->service_name);
+        if (io->tnlr_io) {
+            TNL_LOG(DEBUG, "client sent FIN: client=%s, service=%s", io->tnlr_io->client, io->tnlr_io->service_name);
+        }
         LOG_STATE(DEBUG, "FIN received", pcb);
         io->close_write_fn(io->ziti_io);
         return err;
