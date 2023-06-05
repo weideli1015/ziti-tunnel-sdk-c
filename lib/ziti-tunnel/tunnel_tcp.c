@@ -177,7 +177,9 @@ static void on_tcp_client_err(void *io_ctx, err_t err) {
         }
         // the client will never close, so close the ziti side now.
         TNL_LOG(ERR, "client=%s err=%d, terminating connection", client, err);
-        io->close_fn(io->ziti_io);
+        if (io->close_fn) {
+            io->close_fn(io->ziti_io);
+        }
     }
 }
 
