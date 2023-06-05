@@ -225,7 +225,6 @@ int tunneler_tcp_close_write(struct tcp_pcb *pcb) {
         return 0;
     }
     LOG_STATE(DEBUG, "closing write", pcb);
-    io_ctx_t *io = pcb->callback_arg;
     if (pcb->state < ESTABLISHED) {
         TNL_LOG(DEBUG, "closing connection before handshake complete. sending RST to client");
         tcp_abandon(pcb, 1);
@@ -234,6 +233,7 @@ int tunneler_tcp_close_write(struct tcp_pcb *pcb) {
     err_t err = tcp_shutdown(pcb, 0, 1);
     if (err != ERR_OK) {
         LOG_STATE(ERR, "tcp_shutdown failed: err=%d", pcb, err);
+        tcp_abandon(pcb, 0);
         return -1;
     }
     LOG_STATE(DEBUG, "closed write", pcb);
