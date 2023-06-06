@@ -62,7 +62,7 @@ jobs:
       - name: Run CMake for Linux
         if: ${{ matrix.container != null }}
         run: |
-          ./cmake.sh \
+          ./ziti-builder.sh \
             -p "ci-${{ matrix.preset }}" \
             -t bundle
 
