@@ -261,6 +261,8 @@ int tunneler_tcp_close(struct tcp_pcb *pcb) {
         tcp_abandon(pcb, 1);
         return -1;
     }
+    tcp_arg(pcb, NULL);
+    tcp_recv(pcb, NULL);
     LOG_STATE(DEBUG, "closed", pcb);
     return 0;
 }
