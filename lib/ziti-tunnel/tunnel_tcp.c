@@ -135,9 +135,7 @@ static err_t on_tcp_client_data(void *io_ctx, struct tcp_pcb *pcb, struct pbuf *
     struct io_ctx_s *io = (struct io_ctx_s *)io_ctx;
 
     if (err == ERR_OK && p == NULL) {
-        if (io->tnlr_io) {
-            TNL_LOG(DEBUG, "client sent FIN: client=%s, service=%s", io->tnlr_io->client, io->tnlr_io->service_name);
-        }
+        TNL_LOG(DEBUG, "client sent FIN: client=%s, service=%s", io->tnlr_io->client, io->tnlr_io->service_name);
         LOG_STATE(DEBUG, "FIN received", pcb);
         io->close_write_fn(io->ziti_io);
         return err;
@@ -171,15 +169,13 @@ static void on_tcp_client_err(void *io_ctx, err_t err) {
     } else {
         const char *client = "<unknown>";
         if (io->tnlr_io != NULL) {
-            // null our pcb so tunneler_tcp_close doesn't try to close it.
+            // null our pcb so tunneler_tcp_close doesn't try to close it when close sequence comes back to close the tunneler side.
             io->tnlr_io->tcp = NULL;
             client = io->tnlr_io->client;
         }
         // the client will never close, so close the ziti side now.
         TNL_LOG(ERR, "client=%s err=%d, terminating connection", client, err);
-        if (io->close_fn) {
-            io->close_fn(io->ziti_io);
-        }
+        io->close_write_fn(io->ziti_io);
     }
 }
 
@@ -237,7 +233,7 @@ int tunneler_tcp_close_write(struct tcp_pcb *pcb) {
     err_t err = tcp_shutdown(pcb, 0, 1);
     if (err != ERR_OK) {
         LOG_STATE(ERR, "tcp_shutdown failed: err=%d", pcb, err);
-        tcp_abandon(pcb, 0);
+        tcp_abandon(pcb, 1);
         return -1;
     }
     LOG_STATE(DEBUG, "closed write", pcb);
@@ -262,7 +258,7 @@ int tunneler_tcp_close(struct tcp_pcb *pcb) {
     err_t err = tcp_close(pcb);
     if (err != ERR_OK) {
         LOG_STATE(ERR, "tcp_close failed; err=%d", pcb, err);
-        tcp_abandon(pcb, 0);
+        tcp_abandon(pcb, 1);
         return -1;
     }
     LOG_STATE(DEBUG, "closed", pcb);
