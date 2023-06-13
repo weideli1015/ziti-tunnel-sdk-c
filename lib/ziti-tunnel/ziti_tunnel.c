@@ -515,6 +515,18 @@ static struct raw_pcb * init_protocol_handler(u8_t proto, raw_recv_fn recv_fn, v
     return pcb;
 }
 
+#define LOG_LWIP_POOL_STATS(lvl, pool_type) do { \
+  const struct memp_desc *pool = memp_pools[pool_type]; \
+  TNL_LOG(lvl, #pool_type " used:%d max:%d limit:%d", pool->stats->used, pool->stats->max, pool->stats->avail); \
+} while(0)
+
+static uv_timer_t stats_timer;
+static void log_lwip_stats(uv_timer_t *req) {
+    LOG_LWIP_POOL_STATS(DEBUG, MEMP_TCP_PCB);
+    LOG_LWIP_POOL_STATS(DEBUG, MEMP_UDP_PCB);
+    LOG_LWIP_POOL_STATS(DEBUG, MEMP_PBUF_POOL);
+}
+
 static void run_packet_loop(uv_loop_t *loop, tunneler_context tnlr_ctx) {
     tunneler_sdk_options opts = tnlr_ctx->opts;
     if (opts.ziti_close == NULL || opts.ziti_close_write == NULL ||  opts.ziti_write == NULL ||
@@ -559,6 +571,10 @@ static void run_packet_loop(uv_loop_t *loop, tunneler_context tnlr_ctx) {
     uv_timer_init(loop, &tnlr_ctx->lwip_timer_req);
     uv_unref(&tnlr_ctx->lwip_timer_req);
     uv_timer_start(&tnlr_ctx->lwip_timer_req, check_lwip_timeouts, 0, 10);
+
+    uv_timer_init(loop, &stats_timer);
+    uv_unref((uv_handle_t *) &stats_timer);
+    uv_timer_start(&stats_timer, log_lwip_stats, 0, 10000);
 }
 
 typedef struct ziti_tunnel_async_call_s {
