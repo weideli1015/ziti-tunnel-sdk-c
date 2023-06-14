@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# build this project in the ziti-cmake container
+# build this project in the ziti-builder container
 #
 
 set -euo pipefail
 
 BASENAME="$(basename "${0}")"
 BASEDIR="$(cd "$(dirname "${0}")" && pwd)"
-# set in ziti-cmake image, but this default allows hacking the script to run
-# outside the ziti-cmake container
-: "${GIT_CONFIG_GLOBAL:=/tmp/ziti-cmake-gitconfig}"
+# set in ziti-builder image, but this default allows hacking the script to run
+# outside the ziti-builder container
+: "${GIT_CONFIG_GLOBAL:=/tmp/ziti-builder-gitconfig}"
 
 [[ ${1:-} =~ -h|(--)?help ]] && {
     echo -e "\nUsage: ${BASENAME} [CMD] [ARGS...]"\
-            "\n\nRuns CMD in the ziti-cmake container, and builds the"\
+            "\n\nRuns CMD in the ziti-builder container, and builds the"\
             "\ndefault target if no CMD is specified\n"\
             "\n    -c  [Release|Debug]  set CMAKE_BUILD_TYPE (default: Release)"\
             "\n    -p  CMAKE_PRESET     set CMAKE_TOOLCHAIN_FILE preset (default: ci-linux-x64)"\
@@ -46,23 +46,23 @@ function set_workspace(){
 
     # if project is mounted on WORKDIR then build, else restart in container
     if [[ -x "${WORKDIR}/${BASENAME}" ]]; then
-        # container environment defines BUILD_ENVIRONMENT=ziti-cmake-docker
-        if [[ "${BUILD_ENVIRONMENT:-}" == "ziti-cmake-docker" ]]; then
-            echo "INFO: running in ziti-cmake container"
+        # container environment defines BUILD_ENVIRONMENT=ziti-builder-docker
+        if [[ "${BUILD_ENVIRONMENT:-}" == "ziti-builder-docker" ]]; then
+            echo "INFO: running in ziti-builder container"
             set_git_safe_dirs "${WORKDIR}"
         else
-            echo "ERROR: not running in ziti-cmake container" >&2
+            echo "ERROR: not running in ziti-builder container" >&2
             exit 1
         fi
     else
         echo -e "INFO: project not mounted on ${WORKDIR}, re-running in container"\
-            "\nINFO: 'docker run --user ${UID} --volume ${BASEDIR}:${WORKDIR} openziti/ziti-cmake ${WORKDIR}/${BASENAME} ${*}'"
+            "\nINFO: 'docker run --user ${UID} --volume ${BASEDIR}:${WORKDIR} openziti/ziti-builder ${WORKDIR}/${BASENAME} ${*}'"
         exec docker run \
             --rm \
             --user "${UID}" \
             --volume "${BASEDIR}:${WORKDIR}" \
             --platform "linux/amd64" \
-            openziti/ziti-cmake \
+            openziti/ziti-builder \
                 "${WORKDIR}/${BASENAME}" "${@}"
     fi
 }
