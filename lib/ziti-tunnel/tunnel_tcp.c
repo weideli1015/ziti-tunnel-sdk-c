@@ -241,6 +241,12 @@ int tunneler_tcp_close_write(struct tcp_pcb *pcb) {
         tcp_abandon(pcb, 1);
         return -1;
     }
+    /* don't let lwip send TCP_MAXRTX FIN segments before clearing the connection if the client never acknowledges,
+     * enable keepalive instead.
+     * - https://savannah.nongnu.org/bugs/?31487
+     * - https://savannah.nongnu.org/bugs/?44092
+     */
+    ip_set_option(pcb, SOF_KEEPALIVE);
     LOG_STATE(DEBUG, "closed write", pcb);
 
     return 0;
@@ -268,6 +274,12 @@ int tunneler_tcp_close(struct tcp_pcb *pcb) {
     }
     tcp_arg(pcb, NULL);
     tcp_recv(pcb, NULL);
+    /* don't let lwip send TCP_MAXRTX FIN segments before clearing the connection if the client never acknowledges,
+     * enable keepalive instead
+     * - https://savannah.nongnu.org/bugs/?31487
+     * - https://savannah.nongnu.org/bugs/?44092
+     */
+    ip_set_option(pcb, SOF_KEEPALIVE);
     LOG_STATE(DEBUG, "closed", pcb);
     return 0;
 }
