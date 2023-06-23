@@ -93,6 +93,8 @@ static struct tcp_pcb *new_tcp_pcb(ip_addr_t src, ip_addr_t dest, struct tcp_hdr
     /* allocate a listener and set accept fn to appease lwip */
     npcb->listener = phony_listener;
     npcb->netif_idx = netif_get_index(netif_default);
+    // tell lwip to send tcp keepalive acks when the connection is established
+    ip_set_option(npcb, SOF_KEEPALIVE);
 
     /* Register the new PCB so that we can begin receiving segments for it. */
     TCP_REG_ACTIVE(npcb);
@@ -241,12 +243,6 @@ int tunneler_tcp_close_write(struct tcp_pcb *pcb) {
         tcp_abandon(pcb, 1);
         return -1;
     }
-    /* don't let lwip send TCP_MAXRTX FIN segments before clearing the connection if the client never acknowledges,
-     * enable keepalive instead.
-     * - https://savannah.nongnu.org/bugs/?31487
-     * - https://savannah.nongnu.org/bugs/?44092
-     */
-    ip_set_option(pcb, SOF_KEEPALIVE);
     LOG_STATE(DEBUG, "closed write", pcb);
 
     return 0;
@@ -274,12 +270,6 @@ int tunneler_tcp_close(struct tcp_pcb *pcb) {
     }
     tcp_arg(pcb, NULL);
     tcp_recv(pcb, NULL);
-    /* don't let lwip send TCP_MAXRTX FIN segments before clearing the connection if the client never acknowledges,
-     * enable keepalive instead
-     * - https://savannah.nongnu.org/bugs/?31487
-     * - https://savannah.nongnu.org/bugs/?44092
-     */
-    ip_set_option(pcb, SOF_KEEPALIVE);
     LOG_STATE(DEBUG, "closed", pcb);
     return 0;
 }
